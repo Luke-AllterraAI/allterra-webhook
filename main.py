@@ -20,6 +20,18 @@ TWENTY_BASE_URL = os.getenv("TWENTY_API_URL", "https://api.twenty.com")
 DEFAULT_OWNER_WHATSAPP = os.getenv("OWNER_WHATSAPP")
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _normalise_za_number(number: str) -> str:
+    """Convert 08xxxxxxxx → +2783xxxxxxxx. Leave +27 and other countries alone."""
+    n = number.strip()
+    if n.startswith("0") and len(n) == 10:
+        return "+27" + n[1:]
+    if n and not n.startswith("+"):
+        return "+" + n
+    return n or "Unknown"
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -37,15 +49,15 @@ async def call_ended(request: Request):
         log.error(f"Failed to parse request body: {e}")
         return {"status": "success"}
 
-    # Log raw payload so we can debug Retell's exact format in Railway logs
-    log.info(f"Raw payload keys: {list(data.keys())}")
-
     # ── Retell wraps everything under a "call" key — unwrap if present ────────
     call: dict = data.get("call") or data
 
-    from_number: str = call.get("from_number", "Unknown")
+    from_number: str = _normalise_za_number(call.get("from_number", ""))
     metadata: dict = call.get("metadata") or {}
     analysis: dict = call.get("call_analysis") or {}
+
+    # Log analysis so we can see exactly what Retell extracted
+    log.info(f"call_analysis: {analysis}")
 
     # ── Multi-client: metadata wins, env vars are the fallback ───────────────
     owner_whatsapp: str = metadata.get("owner_whatsapp") or DEFAULT_OWNER_WHATSAPP or ""
