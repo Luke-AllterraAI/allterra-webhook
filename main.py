@@ -61,6 +61,7 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
     # ── Deduplicate — ignore if we already processed this call ───────────────
     call: dict = data.get("call") or data
     call_id: str = call.get("call_id", "")
+    log.info(f"call_id={call_id} call_type={call.get('call_type')} direction={call.get('direction')} from={call.get('from_number')} to={call.get('to_number')}")
     if call_id and call_id in _processed_calls:
         log.info(f"Duplicate call_analyzed ignored: {call_id}")
         return {"status": "success"}
