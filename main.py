@@ -37,24 +37,31 @@ async def call_ended(request: Request):
         log.error(f"Failed to parse request body: {e}")
         return {"status": "success"}
 
-    # ── Extract top-level fields ──────────────────────────────────────────────
-    from_number: str = data.get("from_number", "Unknown")
-    metadata: dict = data.get("metadata") or {}
-    analysis: dict = data.get("call_analysis") or {}
+    # Log raw payload so we can debug Retell's exact format in Railway logs
+    log.info(f"Raw payload keys: {list(data.keys())}")
+
+    # ── Retell wraps everything under a "call" key — unwrap if present ────────
+    call: dict = data.get("call") or data
+
+    from_number: str = call.get("from_number", "Unknown")
+    metadata: dict = call.get("metadata") or {}
+    analysis: dict = call.get("call_analysis") or {}
 
     # ── Multi-client: metadata wins, env vars are the fallback ───────────────
     owner_whatsapp: str = metadata.get("owner_whatsapp") or DEFAULT_OWNER_WHATSAPP or ""
     business_name: str = metadata.get("business_name") or "Allterra AI"
     telnyx_from: str = metadata.get("telnyx_from_number") or DEFAULT_TELNYX_FROM or ""
 
-    # ── Call analysis fields ──────────────────────────────────────────────────
-    caller_name: str = analysis.get("caller_name") or "Unknown"
-    property_address: str = analysis.get("property_address") or "Not provided"
-    job_description: str = analysis.get("job_description") or "Not provided"
-    urgency: str = analysis.get("urgency") or "Standard"
-    callback_time: str = analysis.get("callback_time") or "as soon as possible"
-    call_summary: str = analysis.get("call_summary") or ""
-    is_emergency: bool = bool(analysis.get("is_emergency", False))
+    # ── Custom analysis fields — Retell puts them under custom_analysis_data ──
+    custom: dict = analysis.get("custom_analysis_data") or analysis
+
+    caller_name: str = custom.get("caller_name") or "Unknown"
+    property_address: str = custom.get("property_address") or "Not provided"
+    job_description: str = custom.get("job_description") or "Not provided"
+    urgency: str = custom.get("urgency") or "Standard"
+    callback_time: str = custom.get("callback_time") or "as soon as possible"
+    is_emergency: bool = bool(custom.get("is_emergency", False))
+    call_summary: str = analysis.get("call_summary") or custom.get("call_summary") or ""
 
     urgency_label = "EMERGENCY" if is_emergency else urgency
 
