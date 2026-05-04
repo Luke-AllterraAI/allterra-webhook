@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 import os
 import requests
 import logging
@@ -45,7 +45,7 @@ def health():
 # ── Main webhook ──────────────────────────────────────────────────────────────
 
 @app.post("/call-ended")
-async def call_ended(request: Request):
+async def call_ended(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
     except Exception as e:
@@ -98,7 +98,28 @@ async def call_ended(request: Request):
 
     log.info(f"Call ended — {caller_name} ({from_number}) | {business_name} | {urgency_label}")
 
-    # ── WhatsApp to business owner ────────────────────────────────────────────
+    # ── Return 200 immediately, process in background to avoid Retell timeout ─
+    background_tasks.add_task(
+        process_call,
+        caller_name=caller_name,
+        from_number=from_number,
+        owner_whatsapp=owner_whatsapp,
+        business_name=business_name,
+        telnyx_from=telnyx_from,
+        property_address=property_address,
+        job_description=job_description,
+        callback_time=callback_time,
+        call_summary=call_summary,
+        urgency_label=urgency_label,
+    )
+
+    return {"status": "success"}
+
+
+def process_call(
+    caller_name, from_number, owner_whatsapp, business_name, telnyx_from,
+    property_address, job_description, callback_time, call_summary, urgency_label,
+):
     wa_message = (
         f"*NEW LEAD — {business_name}* [{urgency_label}]\n\n"
         f"*Name:* {caller_name}\n"
@@ -111,14 +132,12 @@ async def call_ended(request: Request):
     )
     send_whatsapp(owner_whatsapp, wa_message)
 
-    # ── SMS to caller ─────────────────────────────────────────────────────────
     sms_text = (
         f"Hi {caller_name} — thanks for calling {business_name}! "
         f"We have your details and will call you back {callback_time}."
     )
     send_sms(from_number, sms_text, telnyx_from)
 
-    # ── Twenty CRM ────────────────────────────────────────────────────────────
     create_crm_contact_and_task(
         name=caller_name,
         phone=from_number,
@@ -128,8 +147,6 @@ async def call_ended(request: Request):
         summary=call_summary,
         callback_time=callback_time,
     )
-
-    return {"status": "success"}
 
 
 # ── WhatsApp via Whapi ────────────────────────────────────────────────────────
