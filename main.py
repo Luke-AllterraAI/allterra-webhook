@@ -11,6 +11,9 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(title="Allterra AI Webhook")
 
+# Deduplication — prevents double-processing if Retell sends the event twice
+_processed_calls: set[str] = set()
+
 # Default credentials — overridden per-client via Retell metadata
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
@@ -55,8 +58,16 @@ async def call_ended(request: Request):
         log.info(f"Ignoring event: {event}")
         return {"status": "success"}
 
-    # ── Retell wraps everything under a "call" key — unwrap if present ────────
+    # ── Deduplicate — ignore if we already processed this call ───────────────
     call: dict = data.get("call") or data
+    call_id: str = call.get("call_id", "")
+    if call_id and call_id in _processed_calls:
+        log.info(f"Duplicate call_analyzed ignored: {call_id}")
+        return {"status": "success"}
+    if call_id:
+        _processed_calls.add(call_id)
+        if len(_processed_calls) > 1000:
+            _processed_calls.clear()
 
     from_number: str = _normalise_za_number(call.get("from_number", ""))
     metadata: dict = call.get("metadata") or {}
