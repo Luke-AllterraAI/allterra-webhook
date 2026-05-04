@@ -49,6 +49,12 @@ async def call_ended(request: Request):
         log.error(f"Failed to parse request body: {e}")
         return {"status": "success"}
 
+    # ── Only process call_ended events ───────────────────────────────────────
+    event = data.get("event", "")
+    if event and event != "call_ended":
+        log.info(f"Ignoring event: {event}")
+        return {"status": "success"}
+
     # ── Retell wraps everything under a "call" key — unwrap if present ────────
     call: dict = data.get("call") or data
 
@@ -65,7 +71,9 @@ async def call_ended(request: Request):
     telnyx_from: str = metadata.get("telnyx_from_number") or DEFAULT_TELNYX_FROM or ""
 
     # ── Custom analysis fields — Retell puts them under custom_analysis_data ──
-    custom: dict = analysis.get("custom_analysis_data") or analysis
+    # Strip whitespace from keys in case of accidental spaces in Retell config
+    raw_custom = analysis.get("custom_analysis_data") or analysis
+    custom: dict = {k.strip(): v for k, v in raw_custom.items()}
 
     caller_name: str = custom.get("caller_name") or "Unknown"
     property_address: str = custom.get("property_address") or "Not provided"
