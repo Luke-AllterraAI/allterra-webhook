@@ -1,0 +1,408 @@
+from fastapi import FastAPI, Request
+import os
+import requests
+import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
+log = logging.getLogger(__name__)
+
+app = FastAPI(title="Allterra AI Webhook")
+
+# Default credentials — overridden per-client via Retell metadata
+WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
+TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
+DEFAULT_TELNYX_FROM = os.getenv("TELNYX_FROM_NUMBER")
+TWENTY_API_KEY = os.getenv("TWENTY_API_KEY")
+TWENTY_BASE_URL = os.getenv("TWENTY_API_URL", "https://api.twenty.com")
+DEFAULT_OWNER_WHATSAPP = os.getenv("OWNER_WHATSAPP")
+
+
+# ── Health check ──────────────────────────────────────────────────────────────
+
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "Allterra AI Webhook"}
+
+
+# ── Main webhook ──────────────────────────────────────────────────────────────
+
+@app.post("/call-ended")
+async def call_ended(request: Request):
+    try:
+        data = await request.json()
+    except Exception as e:
+        log.error(f"Failed to parse request body: {e}")
+        return {"status": "success"}
+
+    # ── Extract top-level fields ──────────────────────────────────────────────
+    from_number: str = data.get("from_number", "Unknown")
+    metadata: dict = data.get("metadata") or {}
+    analysis: dict = data.get("call_analysis") or {}
+
+    # ── Multi-client: metadata wins, env vars are the fallback ───────────────
+    owner_whatsapp: str = metadata.get("owner_whatsapp") or DEFAULT_OWNER_WHATSAPP or ""
+    business_name: str = metadata.get("business_name") or "Allterra AI"
+    telnyx_from: str = metadata.get("telnyx_from_number") or DEFAULT_TELNYX_FROM or ""
+
+    # ── Call analysis fields ──────────────────────────────────────────────────
+    caller_name: str = analysis.get("caller_name") or "Unknown"
+    property_address: str = analysis.get("property_address") or "Not provided"
+    job_description: str = analysis.get("job_description") or "Not provided"
+    urgency: str = analysis.get("urgency") or "Standard"
+    callback_time: str = analysis.get("callback_time") or "as soon as possible"
+    call_summary: str = analysis.get("call_summary") or ""
+    is_emergency: bool = bool(analysis.get("is_emergency", False))
+
+    urgency_label = "EMERGENCY" if is_emergency else urgency
+
+    log.info(f"Call ended — {caller_name} ({from_number}) | {business_name} | {urgency_label}")
+
+    # ── WhatsApp to business owner ────────────────────────────────────────────
+    wa_message = (
+        f"*NEW LEAD — {business_name}* [{urgency_label}]\n\n"
+        f"*Name:* {caller_name}\n"
+        f"*Number:* {from_number}\n"
+        f"*Address:* {property_address}\n"
+        f"*Job:* {job_description}\n"
+        f"*Callback:* {callback_time}\n\n"
+        f"*Summary:* {call_summary}\n\n"
+        f"_Reply DONE when contacted_"
+    )
+    send_whatsapp(owner_whatsapp, wa_message)
+
+    # ── SMS to caller ─────────────────────────────────────────────────────────
+    sms_text = (
+        f"Hi {caller_name} — thanks for calling {business_name}! "
+        f"We have your details and will call you back {callback_time}."
+    )
+    send_sms(from_number, sms_text, telnyx_from)
+
+    # ── Twenty CRM ────────────────────────────────────────────────────────────
+    create_crm_contact_and_task(
+        name=caller_name,
+        phone=from_number,
+        address=property_address,
+        job=job_description,
+        urgency=urgency_label,
+        summary=call_summary,
+        callback_time=callback_time,
+    )
+
+    return {"status": "success"}
+
+
+# ── WhatsApp via Whapi ────────────────────────────────────────────────────────
+
+def send_whatsapp(to: str, message: str):
+    try:
+        if not to:
+            log.warning("send_whatsapp: no recipient number, skipping")
+            return
+        # Normalise to bare digits — Whapi expects "27831234567@s.whatsapp.net"
+        number = to.lstrip("+").split("@")[0]
+        headers = {
+            "Authorization": f"Bearer {WHAPI_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {"to": f"{number}@s.whatsapp.net", "body": message}
+        r = requests.post(
+            "https://gate.whapi.cloud/messages/text",
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        log.info(f"WhatsApp → {number}: HTTP {r.status_code}")
+    except Exception as e:
+        log.error(f"WhatsApp error: {e}")
+
+
+# ── SMS via Telnyx ────────────────────────────────────────────────────────────
+
+def send_sms(to: str, message: str, from_number: str):
+    try:
+        if not to or to == "Unknown":
+            log.warning("send_sms: no recipient number, skipping")
+            return
+        if not from_number:
+            log.warning("send_sms: no sender number configured, skipping")
+            return
+        headers = {
+            "Authorization": f"Bearer {TELNYX_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {"from": from_number, "to": to, "text": message}
+        r = requests.post(
+            "https://api.telnyx.com/v2/messages",
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        log.info(f"SMS → {to}: HTTP {r.status_code}")
+    except Exception as e:
+        log.error(f"SMS error: {e}")
+
+
+# ── Twenty CRM via GraphQL ────────────────────────────────────────────────────
+
+def create_crm_contact_and_task(
+    name: str,
+    phone: str,
+    address: str,
+    job: str,
+    urgency: str,
+    summary: str,
+    callback_time: str,
+):
+    try:
+        api_url = TWENTY_BASE_URL.rstrip("/") + "/graphql"
+        headers = {
+            "Authorization": f"Bearer {TWENTY_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        name_parts = name.strip().split(" ", 1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+        # Create person / contact
+        person_id = _create_twenty_person(
+            api_url, headers, first_name, last_name, phone, address
+        )
+
+        # Create opportunity
+        opportunity_id = _create_twenty_opportunity(
+            api_url, headers, first_name, job, summary, person_id
+        )
+
+        # Create follow-up task linked to both person and opportunity
+        _create_twenty_task(
+            api_url, headers, first_name, urgency, job, address, callback_time, summary, person_id
+        )
+
+    except Exception as e:
+        log.error(f"Twenty CRM error: {e}")
+
+
+def _create_twenty_person(
+    api_url: str,
+    headers: dict,
+    first_name: str,
+    last_name: str,
+    phone: str,
+    address: str,
+) -> str | None:
+    try:
+        mutation = """
+        mutation CreatePerson($input: PersonCreateInput!) {
+            createPerson(data: $input) {
+                id
+            }
+        }
+        """
+        variables = {
+            "input": {
+                "name": {"firstName": first_name, "lastName": last_name},
+                "phones": {
+                    "primaryPhoneNumber": phone,
+                    "primaryPhoneCountryCode": "ZA",
+                    "primaryPhoneCallingCode": "+27",
+                },
+                "city": address,
+            }
+        }
+        r = requests.post(
+            api_url,
+            json={"query": mutation, "variables": variables},
+            headers=headers,
+            timeout=15,
+        )
+        result = r.json()
+        person_id = result.get("data", {}).get("createPerson", {}).get("id")
+        log.info(f"Twenty person created: {person_id}")
+        return person_id
+    except Exception as e:
+        log.error(f"Twenty create person error: {e}")
+        return None
+
+
+def _create_twenty_opportunity(
+    api_url: str,
+    headers: dict,
+    first_name: str,
+    job: str,
+    summary: str,
+    person_id: str | None,
+) -> str | None:
+    try:
+        mutation = """
+        mutation CreateOpportunity($input: OpportunityCreateInput!) {
+            createOpportunity(data: $input) {
+                id
+            }
+        }
+        """
+        opp_input: dict = {
+            "name": f"{first_name} — {job[:60]}",
+            "stage": "CONTACTED",
+        }
+        if person_id:
+            opp_input["pointOfContactId"] = person_id
+
+        r = requests.post(
+            api_url,
+            json={"query": mutation, "variables": {"input": opp_input}},
+            headers=headers,
+            timeout=15,
+        )
+        result = r.json()
+        opp_id = result.get("data", {}).get("createOpportunity", {}).get("id")
+        log.info(f"Twenty opportunity created: {opp_id}")
+
+        if opp_id and summary:
+            _create_twenty_note(api_url, headers, summary, opp_id, person_id)
+
+        return opp_id
+    except Exception as e:
+        log.error(f"Twenty create opportunity error: {e}")
+        return None
+
+
+def _create_twenty_note(
+    api_url: str,
+    headers: dict,
+    summary: str,
+    opp_id: str,
+    person_id: str | None,
+):
+    try:
+        # Create note
+        note_mutation = """
+        mutation CreateNote($input: NoteCreateInput!) {
+            createNote(data: $input) {
+                id
+            }
+        }
+        """
+        r = requests.post(
+            api_url,
+            json={
+                "query": note_mutation,
+                "variables": {
+                    "input": {
+                        "title": "Call Summary",
+                        "bodyV2": {"markdown": summary, "blocknote": None},
+                    }
+                },
+            },
+            headers=headers,
+            timeout=15,
+        )
+        note_id = r.json().get("data", {}).get("createNote", {}).get("id")
+        log.info(f"Twenty note created: {note_id}")
+
+        if not note_id:
+            return
+
+        # Link note to opportunity (and person if available)
+        target_mutation = """
+        mutation CreateNoteTarget($input: NoteTargetCreateInput!) {
+            createNoteTarget(data: $input) {
+                id
+            }
+        }
+        """
+        target_input: dict = {"noteId": note_id, "targetOpportunityId": opp_id}
+        requests.post(
+            api_url,
+            json={"query": target_mutation, "variables": {"input": target_input}},
+            headers=headers,
+            timeout=15,
+        )
+        if person_id:
+            target_input_person: dict = {"noteId": note_id, "targetPersonId": person_id}
+            requests.post(
+                api_url,
+                json={"query": target_mutation, "variables": {"input": target_input_person}},
+                headers=headers,
+                timeout=15,
+            )
+        log.info("Twenty note linked to opportunity and person")
+    except Exception as e:
+        log.error(f"Twenty create note error: {e}")
+
+
+def _create_twenty_task(
+    api_url: str,
+    headers: dict,
+    first_name: str,
+    urgency: str,
+    job: str,
+    address: str,
+    callback_time: str,
+    summary: str,
+    person_id: str | None,
+):
+    try:
+        mutation = """
+        mutation CreateTask($input: TaskCreateInput!) {
+            createTask(data: $input) {
+                id
+            }
+        }
+        """
+        markdown_body = (
+            f"**Job:** {job}\n\n"
+            f"**Address:** {address}\n\n"
+            f"**Callback:** {callback_time}\n\n"
+            f"**Summary:** {summary}"
+        )
+        task_input: dict = {
+            "title": f"Call back {first_name} — {urgency}",
+            "status": "TODO",
+            "bodyV2": {"markdown": markdown_body, "blocknote": None},
+        }
+
+        r = requests.post(
+            api_url,
+            json={"query": mutation, "variables": {"input": task_input}},
+            headers=headers,
+            timeout=15,
+        )
+        result = r.json()
+        task_id = result.get("data", {}).get("createTask", {}).get("id")
+        log.info(f"Twenty task created: {task_id}")
+
+        # Link task to person via separate mutation
+        if task_id and person_id:
+            _link_task_to_person(api_url, headers, task_id, person_id)
+
+    except Exception as e:
+        log.error(f"Twenty create task error: {e}")
+
+
+def _link_task_to_person(api_url: str, headers: dict, task_id: str, person_id: str):
+    try:
+        mutation = """
+        mutation CreateTaskTarget($input: TaskTargetCreateInput!) {
+            createTaskTarget(data: $input) {
+                id
+            }
+        }
+        """
+        r = requests.post(
+            api_url,
+            json={
+                "query": mutation,
+                "variables": {"input": {"taskId": task_id, "targetPersonId": person_id}},
+            },
+            headers=headers,
+            timeout=15,
+        )
+        result = r.json()
+        link_id = result.get("data", {}).get("createTaskTarget", {}).get("id")
+        log.info(f"Twenty task linked to person: {link_id}")
+    except Exception as e:
+        log.error(f"Twenty link task error: {e}")

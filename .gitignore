@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+server_out.log
+server_err.log
+.venv/
+venv/
+.claude/
+probe*.py
