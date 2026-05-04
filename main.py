@@ -49,17 +49,11 @@ async def call_ended(request: Request):
         log.error(f"Failed to parse request body: {e}")
         return {"status": "success"}
 
-    # ── Only process call_analyzed (has full data) — ignore call_ended ───────
+    # ── Only process call_analyzed — it fires after AI extraction is complete ──
     event = data.get("event", "")
-    if event and event not in ("call_analyzed", "call_ended"):
+    if event != "call_analyzed":
         log.info(f"Ignoring event: {event}")
         return {"status": "success"}
-    if event == "call_ended":
-        # call_ended fires before AI analysis — skip if call_analyzed will follow
-        call_obj = data.get("call") or {}
-        if call_obj.get("call_analysis", {}).get("custom_analysis_data") is not None:
-            log.info("Ignoring call_ended — waiting for call_analyzed")
-            return {"status": "success"}
 
     # ── Retell wraps everything under a "call" key — unwrap if present ────────
     call: dict = data.get("call") or data
