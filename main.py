@@ -18,6 +18,7 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
+_ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
 
 # Shared credentials
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
@@ -87,13 +88,22 @@ async def whatsapp_reply(request: Request):
         msg = data.get("message") or data
         messages = [msg]
 
+    global _ai_replies_enabled
+    owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
+
     for msg in messages:
         # Skip messages sent by the bot itself
         if msg.get("from_me"):
             continue
 
+        # Skip group chats — only handle individual conversations
+        chat_id: str = msg.get("chat_id", "") or msg.get("from", "")
+        if chat_id.endswith("@g.us"):
+            log.info(f"Skipping group message from {chat_id}")
+            continue
+
         # Extract sender number and message body
-        sender: str = msg.get("from", "") or msg.get("chat_id", "")
+        sender: str = msg.get("from", "") or chat_id
         if "@" in sender:
             sender = sender.split("@")[0]
 
@@ -110,14 +120,25 @@ async def whatsapp_reply(request: Request):
             continue
 
         upper = body.upper()
+
+        # Owner control commands
+        if sender == owner:
+            if upper == "AI ON":
+                _ai_replies_enabled = True
+                send_whatsapp(owner, "AI replies enabled. I will respond to incoming messages.")
+                continue
+            elif upper == "AI OFF":
+                _ai_replies_enabled = False
+                send_whatsapp(owner, "AI replies disabled.")
+                continue
+
         if upper == "DONE":
             _handle_done_reply()
         elif upper == "BOOKED":
             _handle_done_reply(stage="MEETING_BOOKED")
         elif upper == "QUOTE":
             _handle_done_reply(stage="QUOTE_SENT")
-        else:
-            # AI reply
+        elif _ai_replies_enabled and sender != owner:
             ai_response = _ai_whatsapp_reply(sender, body)
             if ai_response:
                 send_whatsapp(sender, ai_response)
