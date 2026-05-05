@@ -162,7 +162,7 @@ def process_call(
     twenty_api_key, twenty_api_url,
 ):
     wa_message = (
-        f"*NEW LEAD — {business_name}* [{urgency_label}]\n\n"
+        f"*INCOMING CALL — {business_name}* [{urgency_label}]\n\n"
         f"*Name:* {caller_name}\n"
         f"*Number:* {from_number}\n"
         f"*Address:* {property_address}\n"
