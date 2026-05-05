@@ -14,13 +14,42 @@ app = FastAPI(title="Allterra AI Webhook")
 # Deduplication — prevents double-processing if Retell sends the event twice
 _processed_calls: set[str] = set()
 
-# Default credentials — overridden per-client via Retell metadata
+# Shared credentials
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
-DEFAULT_TELNYX_FROM = os.getenv("TELNYX_FROM_NUMBER")
-TWENTY_API_KEY = os.getenv("TWENTY_API_KEY")
-TWENTY_BASE_URL = os.getenv("TWENTY_API_URL", "https://api.twenty.com")
-DEFAULT_OWNER_WHATSAPP = os.getenv("OWNER_WHATSAPP")
+
+# ── Client config — keyed by the Telnyx number callers dial (to_number) ──────
+# Add a new entry here for each client you onboard.
+# twenty_api_key / twenty_api_url can be per-client or fall back to env vars.
+CLIENTS: dict[str, dict] = {
+    "+27600716833": {
+        "business_name": "Allterra AI",
+        "owner_whatsapp": "27833098698",
+        "telnyx_from_number": "+27600716833",
+        "twenty_api_key": os.getenv("TWENTY_API_KEY"),
+        "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
+    },
+}
+
+# Fallback for unknown numbers
+DEFAULT_CLIENT: dict = {
+    "business_name": "Allterra AI",
+    "owner_whatsapp": os.getenv("OWNER_WHATSAPP", "27833098698"),
+    "telnyx_from_number": os.getenv("TELNYX_FROM_NUMBER", ""),
+    "twenty_api_key": os.getenv("TWENTY_API_KEY"),
+    "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
+}
+
+
+def get_client(to_number: str, metadata: dict) -> dict:
+    """Resolve client config: CLIENTS dict → metadata → DEFAULT_CLIENT."""
+    client = dict(CLIENTS.get(to_number) or DEFAULT_CLIENT)
+    # Retell metadata can still override any field at runtime
+    for key in ("business_name", "owner_whatsapp", "telnyx_from_number",
+                "twenty_api_key", "twenty_api_url"):
+        if metadata.get(key):
+            client[key] = metadata[key]
+    return client
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,16 +100,19 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
             _processed_calls.clear()
 
     from_number: str = _normalise_za_number(call.get("from_number", ""))
+    to_number: str = _normalise_za_number(call.get("to_number", ""))
     metadata: dict = call.get("metadata") or {}
     analysis: dict = call.get("call_analysis") or {}
 
-    # Log analysis so we can see exactly what Retell extracted
     log.info(f"call_analysis: {analysis}")
 
-    # ── Multi-client: metadata wins, env vars are the fallback ───────────────
-    owner_whatsapp: str = metadata.get("owner_whatsapp") or DEFAULT_OWNER_WHATSAPP or ""
-    business_name: str = metadata.get("business_name") or "Allterra AI"
-    telnyx_from: str = metadata.get("telnyx_from_number") or DEFAULT_TELNYX_FROM or ""
+    # ── Resolve client config from to_number ─────────────────────────────────
+    client = get_client(to_number, metadata)
+    owner_whatsapp: str = client["owner_whatsapp"]
+    business_name: str = client["business_name"]
+    telnyx_from: str = client["telnyx_from_number"]
+    twenty_api_key: str = client["twenty_api_key"] or ""
+    twenty_api_url: str = client["twenty_api_url"]
 
     # ── Custom analysis fields — Retell puts them under custom_analysis_data ──
     # Strip whitespace from keys in case of accidental spaces in Retell config
@@ -112,6 +144,8 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
         callback_time=callback_time,
         call_summary=call_summary,
         urgency_label=urgency_label,
+        twenty_api_key=twenty_api_key,
+        twenty_api_url=twenty_api_url,
     )
 
     return {"status": "success"}
@@ -120,6 +154,7 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
 def process_call(
     caller_name, from_number, owner_whatsapp, business_name, telnyx_from,
     property_address, job_description, callback_time, call_summary, urgency_label,
+    twenty_api_key, twenty_api_url,
 ):
     wa_message = (
         f"*NEW LEAD — {business_name}* [{urgency_label}]\n\n"
@@ -147,6 +182,8 @@ def process_call(
         urgency=urgency_label,
         summary=call_summary,
         callback_time=callback_time,
+        twenty_api_key=twenty_api_key,
+        twenty_api_url=twenty_api_url,
     )
 
 
@@ -211,11 +248,13 @@ def create_crm_contact_and_task(
     urgency: str,
     summary: str,
     callback_time: str,
+    twenty_api_key: str,
+    twenty_api_url: str,
 ):
     try:
-        api_url = TWENTY_BASE_URL.rstrip("/") + "/graphql"
+        api_url = twenty_api_url.rstrip("/") + "/graphql"
         headers = {
-            "Authorization": f"Bearer {TWENTY_API_KEY}",
+            "Authorization": f"Bearer {twenty_api_key}",
             "Content-Type": "application/json",
         }
 
