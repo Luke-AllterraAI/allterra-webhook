@@ -67,6 +67,95 @@ def _normalise_za_number(number: str) -> str:
     return n or "Unknown"
 
 
+# ── WhatsApp reply webhook ────────────────────────────────────────────────────
+
+@app.post("/whatsapp-reply")
+async def whatsapp_reply(request: Request):
+    try:
+        data = await request.json()
+    except Exception as e:
+        log.error(f"whatsapp-reply parse error: {e}")
+        return {"status": "success"}
+
+    log.info(f"whatsapp-reply payload: {data}")
+
+    # Whapi sends messages in a few possible formats — handle all
+    messages = data.get("messages") or []
+    if not messages:
+        msg = data.get("message") or data
+        messages = [msg]
+
+    for msg in messages:
+        # Extract body from text.body or body directly
+        body: str = ""
+        if isinstance(msg.get("text"), dict):
+            body = msg["text"].get("body", "")
+        else:
+            body = msg.get("body", "") or msg.get("text", "")
+
+        body = body.strip().upper()
+        log.info(f"WhatsApp reply received: '{body}'")
+
+        if body == "DONE":
+            _handle_done_reply()
+        elif body == "BOOKED":
+            _handle_done_reply(stage="MEETING_BOOKED")
+        elif body == "QUOTE":
+            _handle_done_reply(stage="QUOTE_SENT")
+
+    return {"status": "success"}
+
+
+def _handle_done_reply(stage: str = "MEETING_BOOKED"):
+    """Find the most recent CONTACTED opportunity and advance its stage."""
+    try:
+        # Use default client CRM credentials
+        client = DEFAULT_CLIENT
+        api_url = client["twenty_api_url"].rstrip("/") + "/graphql"
+        headers = {
+            "Authorization": f"Bearer {client['twenty_api_key']}",
+            "Content-Type": "application/json",
+        }
+
+        # Find most recent CONTACTED opportunity
+        query = """
+        query {
+            opportunities(
+                filter: { stage: { eq: CONTACTED } }
+                orderBy: { createdAt: DescNullsLast }
+                first: 1
+            ) {
+                edges { node { id name } }
+            }
+        }
+        """
+        r = requests.post(api_url, json={"query": query}, headers=headers, timeout=15)
+        edges = r.json().get("data", {}).get("opportunities", {}).get("edges", [])
+        if not edges:
+            log.warning("No CONTACTED opportunity found to update")
+            return
+
+        opp_id = edges[0]["node"]["id"]
+        opp_name = edges[0]["node"]["name"]
+
+        # Update stage
+        mutation = """
+        mutation UpdateOpportunity($id: ID!, $input: OpportunityUpdateInput!) {
+            updateOpportunity(id: $id, data: $input) { id stage }
+        }
+        """
+        r2 = requests.post(
+            api_url,
+            json={"query": mutation, "variables": {"id": opp_id, "input": {"stage": stage}}},
+            headers=headers,
+            timeout=15,
+        )
+        log.info(f"Opportunity '{opp_name}' updated to {stage}: {r2.json()}")
+
+    except Exception as e:
+        log.error(f"handle_done_reply error: {e}")
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 @app.get("/")
