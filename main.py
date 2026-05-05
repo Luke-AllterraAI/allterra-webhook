@@ -27,7 +27,7 @@ TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 CLIENTS: dict[str, dict] = {
     "+27600716833": {
         "business_name": "Allterra AI",
-        "owner_whatsapp": "27833098698",
+        "owner_whatsapp": "27837088951",
         "telnyx_from_number": "+27600716833",
         "twenty_api_key": os.getenv("TWENTY_API_KEY"),
         "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
@@ -37,7 +37,7 @@ CLIENTS: dict[str, dict] = {
 # Fallback for unknown numbers
 DEFAULT_CLIENT: dict = {
     "business_name": "Allterra AI",
-    "owner_whatsapp": os.getenv("OWNER_WHATSAPP", "27833098698"),
+    "owner_whatsapp": os.getenv("OWNER_WHATSAPP", "27837088951"),
     "telnyx_from_number": os.getenv("TELNYX_FROM_NUMBER", ""),
     "twenty_api_key": os.getenv("TWENTY_API_KEY"),
     "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
