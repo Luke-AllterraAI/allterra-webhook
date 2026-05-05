@@ -132,18 +132,38 @@ async def whatsapp_reply(request: Request):
                 send_whatsapp(owner, "AI replies disabled.")
                 continue
 
-        if upper == "DONE":
-            _handle_done_reply()
-        elif upper == "BOOKED":
-            _handle_done_reply(stage="MEETING_BOOKED")
-        elif upper == "QUOTE":
-            _handle_done_reply(stage="QUOTE_SENT")
+        stage = _detect_stage(upper)
+        if stage:
+            _handle_done_reply(stage=stage)
         elif _ai_replies_enabled and sender != owner:
             ai_response = _ai_whatsapp_reply(sender, body)
             if ai_response:
                 send_whatsapp(sender, ai_response)
 
     return {"status": "success"}
+
+
+def _detect_stage(text: str) -> str | None:
+    """Return a Twenty opportunity stage based on keywords in the owner's message."""
+    _MEETING = {"book", "booked", "booking", "meeting", "appointment", "scheduled",
+                "confirmed", "done", "sorted", "set up", "arranged"}
+    _QUOTE =   {"quote", "quoted", "quoting", "proposal", "price", "pricing",
+                "estimate", "send quote", "sent quote"}
+    _LOST =    {"cancel", "cancelled", "cancellation", "abandoned", "lost", "dead",
+                "not interested", "no show", "noshow", "declined", "gone cold",
+                "withdrew", "withdrawn", "no longer"}
+
+    words = set(text.lower().split())
+    # Also check multi-word phrases
+    phrase = text.lower()
+
+    if any(w in words for w in _MEETING) or any(p in phrase for p in {"set up", "sorted out"}):
+        return "MEETING_BOOKED"
+    if any(w in words for w in _QUOTE) or "sent quote" in phrase or "send quote" in phrase:
+        return "QUOTE_SENT"
+    if any(w in words for w in _LOST) or any(p in phrase for p in {"not interested", "no show", "gone cold", "no longer"}):
+        return "CLOSED_LOST"
+    return None
 
 
 def _handle_done_reply(stage: str = "MEETING_BOOKED"):
@@ -157,11 +177,11 @@ def _handle_done_reply(stage: str = "MEETING_BOOKED"):
             "Content-Type": "application/json",
         }
 
-        # Find most recent CONTACTED opportunity
+        # Find most recent open opportunity (CONTACTED or MEETING_BOOKED or QUOTE_SENT)
         query = """
         query {
             opportunities(
-                filter: { stage: { eq: CONTACTED } }
+                filter: { stage: { in: [CONTACTED, MEETING_BOOKED, QUOTE_SENT] } }
                 orderBy: { createdAt: DescNullsLast }
                 first: 1
             ) {
@@ -170,9 +190,9 @@ def _handle_done_reply(stage: str = "MEETING_BOOKED"):
         }
         """
         r = requests.post(api_url, json={"query": query}, headers=headers, timeout=15)
-        edges = r.json().get("data", {}).get("opportunities", {}).get("edges", [])
+        edges = (r.json().get("data") or {}).get("opportunities", {}).get("edges", [])
         if not edges:
-            log.warning("No CONTACTED opportunity found to update")
+            log.warning("No open opportunity found to update")
             return
 
         opp_id = edges[0]["node"]["id"]
