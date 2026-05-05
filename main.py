@@ -179,6 +179,12 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
         log.info(f"Ignoring event: {event}")
         return {"status": "success"}
 
+    # ── Filter out error calls (duplicate SIP leg shows as error) ─────────────
+    call_status = (data.get("call") or data).get("call_status", "")
+    if call_status == "error":
+        log.info(f"Ignoring error call: {call_status}")
+        return {"status": "success"}
+
     # ── Deduplicate on from+to within 60s (Retell creates 2 call_ids per call) ─
     call: dict = data.get("call") or data
     call_id: str = call.get("call_id", "")
