@@ -12,10 +12,8 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="Allterra AI Webhook")
 
 # Deduplication — keyed by (from_number, to_number), value is timestamp
-# Retell sometimes creates two call objects for one conversation with different call_ids
 import time as _time
-_recent_calls: dict[str, float] = {}
-_DEDUP_WINDOW = 300  # seconds — covers both legs of a Telnyx duplicate call
+_recent_calls: dict[str, float] = {}  # call_id → timestamp, prevents duplicate webhook processing
 
 # Shared credentials
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
@@ -185,17 +183,16 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
         log.info(f"Ignoring error call: {call_status}")
         return {"status": "success"}
 
-    # ── Deduplicate on from+to within 60s (Retell creates 2 call_ids per call) ─
     call: dict = data.get("call") or data
     call_id: str = call.get("call_id", "")
     log.info(f"call_id={call_id} call_type={call.get('call_type')} direction={call.get('direction')} from={call.get('from_number')} to={call.get('to_number')}")
 
-    dedup_key = f"{call.get('from_number')}>{call.get('to_number')}"
-    now = _time.time()
-    if dedup_key in _recent_calls and now - _recent_calls[dedup_key] < _DEDUP_WINDOW:
-        log.info(f"Duplicate ignored (same from/to within {_DEDUP_WINDOW}s): {dedup_key}")
+    # Deduplicate on call_id — Retell can fire the same webhook twice for one call
+    if call_id and call_id in _recent_calls:
+        log.info(f"Duplicate ignored (call_id already processed): {call_id}")
         return {"status": "success"}
-    _recent_calls[dedup_key] = now
+    if call_id:
+        _recent_calls[call_id] = _time.time()
     if len(_recent_calls) > 1000:
         _recent_calls.clear()
 
