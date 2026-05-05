@@ -295,6 +295,21 @@ def _create_twenty_person(
     address: str,
 ) -> str | None:
     try:
+        # Twenty stores numbers without the calling code — strip +27 for search
+        search_number = phone.lstrip("+")
+        if search_number.startswith("27") and len(search_number) == 11:
+            search_number = search_number[2:]  # +27837088951 → 837088951
+
+        # Check if person already exists
+        existing_id = _find_twenty_person_by_phone(api_url, headers, search_number)
+        if existing_id:
+            log.info(f"Twenty existing person found: {existing_id}")
+            # Update name if we now have it
+            if first_name and first_name != "Unknown":
+                _update_twenty_person_name(api_url, headers, existing_id, first_name, last_name)
+            return existing_id
+
+        # Create new person
         mutation = """
         mutation CreatePerson($input: PersonCreateInput!) {
             createPerson(data: $input) {
@@ -326,6 +341,56 @@ def _create_twenty_person(
     except Exception as e:
         log.error(f"Twenty create person error: {e}")
         return None
+
+
+def _find_twenty_person_by_phone(api_url: str, headers: dict, phone: str) -> str | None:
+    try:
+        query = """
+        query FindPerson($filter: PersonFilterInput!) {
+            people(filter: $filter, first: 1,
+                   orderBy: { createdAt: { direction: AscNullsLast } }) {
+                edges { node { id name { firstName } } }
+            }
+        }
+        """
+        r = requests.post(
+            api_url,
+            json={"query": query, "variables": {
+                "filter": {"phones": {"primaryPhoneNumber": {"eq": phone}}}
+            }},
+            headers=headers,
+            timeout=15,
+        )
+        edges = r.json().get("data", {}).get("people", {}).get("edges", [])
+        if edges:
+            return edges[0]["node"]["id"]
+        return None
+    except Exception as e:
+        log.error(f"Twenty find person error: {e}")
+        return None
+
+
+def _update_twenty_person_name(
+    api_url: str, headers: dict, person_id: str, first_name: str, last_name: str
+):
+    try:
+        mutation = """
+        mutation UpdatePerson($id: ID!, $input: PersonUpdateInput!) {
+            updatePerson(id: $id, data: $input) { id }
+        }
+        """
+        requests.post(
+            api_url,
+            json={"query": mutation, "variables": {
+                "id": person_id,
+                "input": {"name": {"firstName": first_name, "lastName": last_name}},
+            }},
+            headers=headers,
+            timeout=15,
+        )
+        log.info(f"Twenty person name updated: {person_id}")
+    except Exception as e:
+        log.error(f"Twenty update person error: {e}")
 
 
 def _create_twenty_opportunity(
