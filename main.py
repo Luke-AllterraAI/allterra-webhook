@@ -15,7 +15,7 @@ app = FastAPI(title="Allterra AI Webhook")
 # Retell sometimes creates two call objects for one conversation with different call_ids
 import time as _time
 _recent_calls: dict[str, float] = {}
-_DEDUP_WINDOW = 60  # seconds
+_DEDUP_WINDOW = 300  # seconds — covers both legs of a Telnyx duplicate call
 
 # Shared credentials
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
@@ -456,7 +456,7 @@ def _find_twenty_person_by_phone(api_url: str, headers: dict, phone: str) -> str
             headers=headers,
             timeout=15,
         )
-        edges = r.json().get("data", {}).get("people", {}).get("edges", [])
+        edges = (r.json().get("data") or {}).get("people", {}).get("edges", [])
         if edges:
             return edges[0]["node"]["id"]
         return None
