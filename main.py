@@ -3,6 +3,7 @@ import os
 import requests
 import logging
 from dotenv import load_dotenv
+import anthropic
 
 load_dotenv()
 
@@ -14,6 +15,9 @@ app = FastAPI(title="Allterra AI Webhook")
 import time as _time
 _recent_calls: dict[str, float] = {}
 _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to within 5 minutes
+
+# WhatsApp AI conversation history — keyed by sender phone number
+_conversations: dict[str, list] = {}
 
 # Shared credentials
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
@@ -84,22 +88,39 @@ async def whatsapp_reply(request: Request):
         messages = [msg]
 
     for msg in messages:
-        # Extract body from text.body or body directly
+        # Skip messages sent by the bot itself
+        if msg.get("from_me"):
+            continue
+
+        # Extract sender number and message body
+        sender: str = msg.get("from", "") or msg.get("chat_id", "")
+        if "@" in sender:
+            sender = sender.split("@")[0]
+
         body: str = ""
         if isinstance(msg.get("text"), dict):
             body = msg["text"].get("body", "")
         else:
             body = msg.get("body", "") or msg.get("text", "")
 
-        body = body.strip().upper()
-        log.info(f"WhatsApp reply received: '{body}'")
+        body = body.strip()
+        log.info(f"WhatsApp reply from {sender}: '{body}'")
 
-        if body == "DONE":
+        if not body:
+            continue
+
+        upper = body.upper()
+        if upper == "DONE":
             _handle_done_reply()
-        elif body == "BOOKED":
+        elif upper == "BOOKED":
             _handle_done_reply(stage="MEETING_BOOKED")
-        elif body == "QUOTE":
+        elif upper == "QUOTE":
             _handle_done_reply(stage="QUOTE_SENT")
+        else:
+            # AI reply
+            ai_response = _ai_whatsapp_reply(sender, body)
+            if ai_response:
+                send_whatsapp(sender, ai_response)
 
     return {"status": "success"}
 
@@ -283,6 +304,44 @@ def process_call(
         twenty_api_key=twenty_api_key,
         twenty_api_url=twenty_api_url,
     )
+
+
+# ── WhatsApp AI reply ─────────────────────────────────────────────────────────
+
+WHATSAPP_AI_SYSTEM = """You are a friendly and professional AI assistant for Allterra AI, \
+a South African company that provides AI voice agent solutions for businesses. \
+You help answer questions from leads and clients over WhatsApp. \
+Keep replies concise and conversational — this is WhatsApp, not email. \
+If someone wants to book a meeting or get a quote, encourage them to do so and let them know the team will follow up. \
+Never make up pricing or specific technical details you don't know — offer to have someone from the team reach out instead."""
+
+
+def _ai_whatsapp_reply(sender: str, message: str) -> str | None:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        log.warning("ANTHROPIC_API_KEY not set — skipping AI reply")
+        return None
+    try:
+        history = _conversations.setdefault(sender, [])
+        history.append({"role": "user", "content": message})
+        # Keep last 20 messages to avoid excessive token usage
+        if len(history) > 20:
+            history[:] = history[-20:]
+
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=WHATSAPP_AI_SYSTEM,
+            messages=history,
+        )
+        reply = response.content[0].text.strip()
+        history.append({"role": "assistant", "content": reply})
+        log.info(f"AI reply to {sender}: {reply}")
+        return reply
+    except Exception as e:
+        log.error(f"AI reply error: {e}")
+        return None
 
 
 # ── WhatsApp via Whapi ────────────────────────────────────────────────────────
