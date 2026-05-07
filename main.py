@@ -39,7 +39,7 @@ CLIENTS: dict[str, dict] = {
         "business_name": "Renewable Plumbing and Solar Experts",
         "owner_whatsapp": "27837088951",
         "telnyx_from_number": "+27600485594",
-        "twenty_api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTc3MjM1LCJleHAiOjQ5MzE3NzcyMzQsImp0aSI6ImM0ZjY5ZGVhLWUwYzktNDZlYS1hNTIyLTljZWY0NjM0MjBmNyJ9.xaO_pLwQ560_wVIeHfxkbmyA2imgUy2Eglrd_3lMT-8",
+        "twenty_api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTgxNTAyLCJleHAiOjQ5MzE2OTUxMDEsImp0aSI6ImFlYmUwNzc1LTRmYTYtNGFlMy1hZjU3LTMyMzZhN2UwZWFlNiJ9.LFncKK8Jt-54houNowblF0oDd_keWqRgzR0c8SYVqtE",
         "twenty_api_url": "https://twenty-production-9955.up.railway.app",
     },
 }
@@ -550,7 +550,7 @@ def _find_twenty_person_by_phone(api_url: str, headers: dict, phone: str) -> str
         query = """
         query FindPerson($filter: PersonFilterInput!) {
             people(filter: $filter, first: 1,
-                   orderBy: { createdAt: { direction: AscNullsLast } }) {
+                   orderBy: { createdAt: AscNullsLast }) {
                 edges { node { id name { firstName } } }
             }
         }
@@ -563,7 +563,10 @@ def _find_twenty_person_by_phone(api_url: str, headers: dict, phone: str) -> str
             headers=headers,
             timeout=15,
         )
-        edges = (r.json().get("data") or {}).get("people", {}).get("edges", [])
+        result = r.json()
+        if result.get("errors"):
+            log.error(f"Twenty findPerson errors: {result['errors']}")
+        edges = ((result.get("data") or {}).get("people") or {}).get("edges", [])
         if edges:
             return edges[0]["node"]["id"]
         return None
