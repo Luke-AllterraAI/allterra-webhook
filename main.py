@@ -37,7 +37,7 @@ CLIENTS: dict[str, dict] = {
     },
     "+27600485594": {
         "business_name": "Renewable Plumbing and Solar Experts",
-        "owner_whatsapp": "27837088951",
+        "owner_whatsapp": "27748887981",
         "telnyx_from_number": "+27600485594",
         "twenty_api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTc3MjM1LCJleHAiOjQ5MzE3NzcyMzQsImp0aSI6ImM0ZjY5ZGVhLWUwYzktNDZlYS1hNTIyLTljZWY0NjM0MjBmNyJ9.xaO_pLwQ560_wVIeHfxkbmyA2imgUy2Eglrd_3lMT-8",
         "twenty_api_url": "https://twenty-production-9955.up.railway.app",
