@@ -40,7 +40,7 @@ CLIENTS: dict[str, dict] = {
         "owner_whatsapp": "27837088951",
         "telnyx_from_number": "+27600485594",
         "twenty_api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTc3MjM1LCJleHAiOjQ5MzE3NzcyMzQsImp0aSI6ImM0ZjY5ZGVhLWUwYzktNDZlYS1hNTIyLTljZWY0NjM0MjBmNyJ9.xaO_pLwQ560_wVIeHfxkbmyA2imgUy2Eglrd_3lMT-8",
-        "twenty_api_url": "https://twenty-production-9955.up.railway.app/api",
+        "twenty_api_url": "https://twenty-production-9955.up.railway.app",
     },
 }
 
@@ -535,7 +535,9 @@ def _create_twenty_person(
             timeout=15,
         )
         result = r.json()
-        person_id = result.get("data", {}).get("createPerson", {}).get("id")
+        if result.get("errors"):
+            log.error(f"Twenty createPerson errors: {result['errors']}")
+        person_id = (result.get("data") or {}).get("createPerson", {}).get("id")
         log.info(f"Twenty person created: {person_id}")
         return person_id
     except Exception as e:
