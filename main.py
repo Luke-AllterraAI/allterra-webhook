@@ -35,6 +35,13 @@ CLIENTS: dict[str, dict] = {
         "twenty_api_key": os.getenv("TWENTY_API_KEY"),
         "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
     },
+    "+27600485594": {
+        "business_name": "Renewable Plumbing and Solar Experts",
+        "owner_whatsapp": "27748887981",
+        "telnyx_from_number": "+27600485594",
+        "twenty_api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTc3MjM1LCJleHAiOjQ5MzE3NzcyMzQsImp0aSI6ImM0ZjY5ZGVhLWUwYzktNDZlYS1hNTIyLTljZWY0NjM0MjBmNyJ9.xaO_pLwQ560_wVIeHfxkbmyA2imgUy2Eglrd_3lMT-8",
+        "twenty_api_url": "https://twenty-production-9955.up.railway.app",
+    },
 }
 
 # Fallback for unknown numbers
