@@ -628,7 +628,9 @@ def _create_twenty_opportunity(
             timeout=15,
         )
         result = r.json()
-        opp_id = result.get("data", {}).get("createOpportunity", {}).get("id")
+        if result.get("errors"):
+            log.error(f"Twenty createOpportunity errors: {result['errors']}")
+        opp_id = (result.get("data") or {}).get("createOpportunity", {}).get("id")
         log.info(f"Twenty opportunity created: {opp_id}")
 
         if opp_id and summary:
