@@ -32,6 +32,7 @@ TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 #
 # CORE (every client):
 #   business_name         — displayed in WhatsApp notifications and CRM
+#   business_type         — e.g. "Plumbing and Solar" — used in auto-replies
 #   telnyx_from_number    — the Telnyx number Retell uses for this client
 #   twenty_api_key        — Twenty CRM API key
 #   twenty_api_url        — Twenty CRM Railway URL
@@ -39,42 +40,46 @@ TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 #   whapi_token           — Whapi token for sending call summaries
 #
 # ADD-ON (optional):
-#   whatsapp_bot          — True to enable AI conversation assistant on dedicated WhatsApp number
+#   whatsapp_mode         — "off" | "missed_calls_only" | "all_messages"
+#                           Controls the /whatsapp-event endpoint behaviour
 #
 CLIENTS: dict[str, dict] = {
     "+27600716833": {
         # ── Core ──
         "business_name":      "Allterra AI",
+        "business_type":      "AI Solutions",
         "telnyx_from_number": "+27600716833",
         "twenty_api_key":     os.getenv("TWENTY_API_KEY"),
         "twenty_api_url":     os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
         "owner_whatsapp":     "27837088951",
         "whapi_token":        os.getenv("WHAPI_TOKEN"),
         # ── Add-on ──
-        "whatsapp_bot":       True,
+        "whatsapp_mode":      "all_messages",
     },
     "+27600485594": {
         # ── Core ──
         "business_name":      "Renewable Plumbing and Solar Experts",
+        "business_type":      "Plumbing and Solar",
         "telnyx_from_number": "+27600485594",
         "twenty_api_key":     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTgxNTAyLCJleHAiOjQ5MzE2OTUxMDEsImp0aSI6ImFlYmUwNzc1LTRmYTYtNGFlMy1hZjU3LTMyMzZhN2UwZWFlNiJ9.LFncKK8Jt-54houNowblF0oDd_keWqRgzR0c8SYVqtE",
         "twenty_api_url":     "https://twenty-production-9955.up.railway.app",
         "owner_whatsapp":     "27748887981",
         "whapi_token":        os.getenv("WHAPI_TOKEN"),
         # ── Add-on ──
-        "whatsapp_bot":       False,  # enable when client gets dedicated WhatsApp number
+        "whatsapp_mode":      "missed_calls_only",  # upgrade to "all_messages" when bot SIM is active
     },
 }
 
 # Fallback for unknown numbers
 DEFAULT_CLIENT: dict = {
     "business_name":      "Allterra AI",
+    "business_type":      "AI Solutions",
     "telnyx_from_number": os.getenv("TELNYX_FROM_NUMBER", ""),
     "twenty_api_key":     os.getenv("TWENTY_API_KEY"),
     "twenty_api_url":     os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
     "owner_whatsapp":     os.getenv("OWNER_WHATSAPP", "27837088951"),
     "whapi_token":        os.getenv("WHAPI_TOKEN"),
-    "whatsapp_bot":       False,
+    "whatsapp_mode":      "off",
 }
 
 
@@ -278,6 +283,222 @@ async def telnyx_sms(request: Request):
     except Exception as e:
         log.error(f"telnyx-sms error: {e}")
     return {"status": "success"}
+
+
+# ── WhatsApp event webhook (missed calls / inbound messages) ─────────────────
+
+@app.post("/whatsapp-event")
+async def whatsapp_event(request: Request, background_tasks: BackgroundTasks, telnyx: str = None):
+    try:
+        data = await request.json()
+    except Exception as e:
+        log.error(f"whatsapp-event parse error: {e}")
+        return {"status": "success"}
+
+    log.info(f"whatsapp-event telnyx={telnyx} payload={data}")
+
+    client = CLIENTS.get(telnyx) or DEFAULT_CLIENT
+    mode: str = client.get("whatsapp_mode", "off")
+
+    if mode == "off":
+        log.info(f"whatsapp_mode=off for {client.get('business_name')}, ignoring")
+        return {"status": "success"}
+
+    event_type: str = data.get("event", "")
+    call_type: str  = data.get("type", "")
+    from_jid: str   = data.get("from", "")
+    phone: str      = from_jid.split("@")[0] if "@" in from_jid else from_jid
+
+    whapi_token    = client.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
+    owner_whatsapp = client.get("owner_whatsapp", "")
+    business_name  = client.get("business_name", "")
+    business_type  = client.get("business_type", "")
+    twenty_api_key = client.get("twenty_api_key", "")
+    twenty_api_url = client.get("twenty_api_url", "")
+
+    if event_type == "call" and call_type == "missed":
+        if mode in ("missed_calls_only", "all_messages"):
+            background_tasks.add_task(
+                _handle_whatsapp_missed_call,
+                phone=phone,
+                whapi_token=whapi_token,
+                owner_whatsapp=owner_whatsapp,
+                business_name=business_name,
+                business_type=business_type,
+                twenty_api_key=twenty_api_key,
+                twenty_api_url=twenty_api_url,
+            )
+
+    elif event_type == "message":
+        if mode == "all_messages":
+            body: str = data.get("body", "")
+            background_tasks.add_task(
+                _handle_whatsapp_message,
+                phone=phone,
+                body=body,
+                whapi_token=whapi_token,
+                owner_whatsapp=owner_whatsapp,
+                business_name=business_name,
+                business_type=business_type,
+                twenty_api_key=twenty_api_key,
+                twenty_api_url=twenty_api_url,
+            )
+
+    return {"status": "success"}
+
+
+def is_contact_saved(phone: str, whapi_token: str) -> bool:
+    """Return True if the number is saved in the WhatsApp contact list (has a custom name)."""
+    try:
+        if not whapi_token:
+            return False
+        number = phone.lstrip("+").split("@")[0]
+        headers = {"Authorization": f"Bearer {whapi_token}"}
+        r = requests.get(
+            f"https://gate.whapi.cloud/contacts/{number}@s.whatsapp.net",
+            headers=headers,
+            timeout=10,
+        )
+        if r.status_code == 200:
+            contact = r.json()
+            saved_name = contact.get("name", "")
+            push_name  = contact.get("notify", "")
+            # A saved contact has a custom name distinct from the push name
+            return bool(saved_name and saved_name != push_name)
+        return False
+    except Exception as e:
+        log.error(f"is_contact_saved error: {e}")
+        return False
+
+
+def _handle_whatsapp_missed_call(
+    phone, whapi_token, owner_whatsapp, business_name, business_type, twenty_api_key, twenty_api_url
+):
+    try:
+        saved = is_contact_saved(phone, whapi_token)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_missed_call contact check error: {e}")
+        saved = False
+
+    if saved:
+        log.info(f"Missed WA call from saved contact {phone} — no action")
+        return
+
+    try:
+        auto_reply = (
+            f"Hi! You just tried calling *{business_name}* via WhatsApp. "
+            f"We've noted your call and someone will be in touch with you shortly. "
+            f"Alternatively, call us directly and our AI receptionist will take your details right away. 😊"
+        )
+        send_whatsapp(phone, auto_reply, whapi_token=whapi_token)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_missed_call auto-reply error: {e}")
+
+    try:
+        _create_twenty_contact_from_whatsapp(phone, twenty_api_key, twenty_api_url)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_missed_call CRM error: {e}")
+
+    try:
+        if owner_whatsapp:
+            msg = (
+                f"📞 *Missed WhatsApp Call — {business_name}*\n\n"
+                f"*Number:* +{phone}\n"
+                f"_Unknown contact — auto-reply sent & CRM contact created_"
+            )
+            send_whatsapp(owner_whatsapp, msg, whapi_token=whapi_token)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_missed_call owner notify error: {e}")
+
+
+def _handle_whatsapp_message(
+    phone, body, whapi_token, owner_whatsapp, business_name, business_type, twenty_api_key, twenty_api_url
+):
+    try:
+        saved = is_contact_saved(phone, whapi_token)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_message contact check error: {e}")
+        saved = False
+
+    if saved:
+        log.info(f"WA message from saved contact {phone} — no action")
+        return
+
+    try:
+        auto_reply = (
+            f"Hi! Thanks for reaching out to *{business_name}*. "
+            f"We've received your message and someone will be in touch shortly. "
+            f"For urgent {business_type} needs, you can also call us directly — "
+            f"our AI receptionist is available 24/7. 😊"
+        )
+        send_whatsapp(phone, auto_reply, whapi_token=whapi_token)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_message auto-reply error: {e}")
+
+    try:
+        _create_twenty_contact_from_whatsapp(phone, twenty_api_key, twenty_api_url)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_message CRM error: {e}")
+
+    try:
+        if owner_whatsapp:
+            preview = (body[:120] + "…") if len(body) > 120 else body
+            msg = (
+                f"💬 *New WhatsApp Message — {business_name}*\n\n"
+                f"*From:* +{phone}\n"
+                f"*Message:* {preview}\n\n"
+                f"_Unknown contact — auto-reply sent & CRM contact created_"
+            )
+            send_whatsapp(owner_whatsapp, msg, whapi_token=whapi_token)
+    except Exception as e:
+        log.error(f"_handle_whatsapp_message owner notify error: {e}")
+
+
+def _create_twenty_contact_from_whatsapp(phone: str, twenty_api_key: str, twenty_api_url: str) -> str | None:
+    """Create a minimal CRM contact from a WhatsApp interaction."""
+    if not twenty_api_key or not twenty_api_url:
+        return None
+    try:
+        api_url = twenty_api_url.rstrip("/") + "/graphql"
+        headers = {
+            "Authorization": f"Bearer {twenty_api_key}",
+            "Content-Type": "application/json",
+        }
+        normalised = "+" + phone.lstrip("+")
+        search_number = normalised.lstrip("+")
+        if search_number.startswith("27") and len(search_number) == 11:
+            search_number = search_number[2:]
+
+        existing_id = _find_twenty_person_by_phone(api_url, headers, search_number)
+        if existing_id:
+            log.info(f"WA CRM contact already exists: {existing_id}")
+            return existing_id
+
+        mutation = """
+        mutation CreatePerson($input: PersonCreateInput!) {
+            createPerson(data: $input) { id }
+        }
+        """
+        variables = {
+            "input": {
+                "name": {"firstName": "WhatsApp", "lastName": "Lead"},
+                "phones": {
+                    "primaryPhoneNumber": normalised,
+                    "primaryPhoneCountryCode": "ZA",
+                    "primaryPhoneCallingCode": "+27",
+                },
+            }
+        }
+        r = requests.post(api_url, json={"query": mutation, "variables": variables}, headers=headers, timeout=15)
+        result = r.json()
+        if result.get("errors"):
+            log.error(f"WA CRM create contact errors: {result['errors']}")
+        person_id = (result.get("data") or {}).get("createPerson", {}).get("id")
+        log.info(f"WA CRM contact created: {person_id}")
+        return person_id
+    except Exception as e:
+        log.error(f"_create_twenty_contact_from_whatsapp error: {e}")
+        return None
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
