@@ -20,6 +20,7 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
 _redirect_enabled: bool = False    # owner must send "REDIRECT ON" to activate
+_wa_reply_mode: str = "template"   # owner sends "REPLY AI" or "REPLY TEMPLATE" to switch
 
 REDIRECT_MESSAGE = (
     "Hi! 👋 Thanks for reaching out. For immediate assistance please call us on "
@@ -128,7 +129,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
 
     log.info(f"whatsapp-reply payload: {data}")
 
-    global _ai_replies_enabled
+    global _ai_replies_enabled, _wa_reply_mode
     whapi_token = DEFAULT_CLIENT.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
     owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
 
@@ -148,7 +149,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             business_type=DEFAULT_CLIENT.get("business_type", ""),
             twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
             twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
-            reply_mode=DEFAULT_CLIENT.get("whatsapp_reply_mode", "template"),
+            reply_mode=_wa_reply_mode,
             ai_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt", ""),
         )
 
@@ -228,6 +229,12 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             elif upper == "REDIRECT OFF":
                 _redirect_enabled = False
                 send_whatsapp(owner, "Call redirect disabled.", whapi_token=whapi_token)
+            elif upper == "REPLY AI":
+                _wa_reply_mode = "ai"
+                send_whatsapp(owner, "WhatsApp auto-replies switched to AI mode. 🤖", whapi_token=whapi_token)
+            elif upper == "REPLY TEMPLATE":
+                _wa_reply_mode = "template"
+                send_whatsapp(owner, "WhatsApp auto-replies switched to template mode. 📝", whapi_token=whapi_token)
             else:
                 stage = _detect_stage(upper)
                 if stage:
@@ -249,7 +256,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
                     business_type=DEFAULT_CLIENT.get("business_type", ""),
                     twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
                     twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
-                    reply_mode=DEFAULT_CLIENT.get("whatsapp_reply_mode", "template"),
+                    reply_mode=_wa_reply_mode,
                     ai_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt", ""),
                 )
 
