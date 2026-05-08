@@ -317,6 +317,7 @@ async def whatsapp_event(request: Request, background_tasks: BackgroundTasks, te
     twenty_api_url = client.get("twenty_api_url", "")
 
     if event_type == "call" and call_type == "missed":
+        # Missed calls always trigger auto-reply regardless of AI toggle
         if mode in ("missed_calls_only", "all_messages"):
             background_tasks.add_task(
                 _handle_whatsapp_missed_call,
@@ -330,7 +331,8 @@ async def whatsapp_event(request: Request, background_tasks: BackgroundTasks, te
             )
 
     elif event_type == "message":
-        if mode == "all_messages":
+        # Inbound messages only auto-reply when owner has sent "AI ON"
+        if mode == "all_messages" and _ai_replies_enabled:
             body: str = data.get("body", "")
             background_tasks.add_task(
                 _handle_whatsapp_message,
