@@ -142,7 +142,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
 
     for call in (data.get("calls") or []):
         log.info(f"WhatsApp call: from={call.get('from')} status={call.get('status')}")
-        if call.get("status") == "missed":
+        if call.get("status") in ("missed", "canceled"):
             _dispatch_missed_call(call.get("from", ""))
 
     # ── Inbound messages ─────────────────────────────────────────────────────
