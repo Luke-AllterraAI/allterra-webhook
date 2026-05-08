@@ -166,11 +166,23 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
 
         msg_type = msg.get("type", "")
 
-        # Missed call sent as a message event
+        # Missed call — Whapi may send as type=call or as a system message with "missed" text
         if msg_type == "call":
             call_status = (msg.get("call") or {}).get("type", "") or msg.get("status", "")
             log.info(f"WhatsApp call event from {sender}: status={call_status}")
-            if call_status in ("missed", "") and sender != owner:
+            if sender != owner:
+                _dispatch_missed_call(sender)
+            continue
+
+        # WhatsApp drops a "Missed voice call" / "Missed video call" system message in the chat
+        raw_body_check = ""
+        if isinstance(msg.get("text"), dict):
+            raw_body_check = msg["text"].get("body", "")
+        else:
+            raw_body_check = msg.get("body", "") or msg.get("text", "")
+        if "missed" in raw_body_check.lower() and "call" in raw_body_check.lower():
+            log.info(f"Missed call system message from {sender}: '{raw_body_check}'")
+            if sender != owner:
                 _dispatch_missed_call(sender)
             continue
 
