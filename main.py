@@ -109,7 +109,7 @@ def _normalise_za_number(number: str) -> str:
 # ── WhatsApp reply webhook ────────────────────────────────────────────────────
 
 @app.post("/whatsapp-reply")
-async def whatsapp_reply(request: Request):
+async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
     except Exception as e:
@@ -118,27 +118,42 @@ async def whatsapp_reply(request: Request):
 
     log.info(f"whatsapp-reply payload: {data}")
 
-    # Whapi sends messages in a few possible formats — handle all
+    global _ai_replies_enabled
+    whapi_token = DEFAULT_CLIENT.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
+    owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
+
+    # ── Missed calls — always auto-reply, no toggle needed ───────────────────
+    for call in (data.get("calls") or []):
+        if call.get("type") == "missed":
+            caller_jid: str = call.get("from", "")
+            phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
+            log.info(f"Missed WhatsApp call from {phone}")
+            background_tasks.add_task(
+                _handle_whatsapp_missed_call,
+                phone=phone,
+                whapi_token=whapi_token,
+                owner_whatsapp=owner,
+                business_name=DEFAULT_CLIENT.get("business_name", ""),
+                business_type=DEFAULT_CLIENT.get("business_type", ""),
+                twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
+                twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+            )
+
+    # ── Inbound messages ─────────────────────────────────────────────────────
     messages = data.get("messages") or []
     if not messages:
         msg = data.get("message") or data
         messages = [msg]
 
-    global _ai_replies_enabled
-    owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
-
     for msg in messages:
-        # Skip messages sent by the bot itself
         if msg.get("from_me"):
             continue
 
-        # Skip group chats — only handle individual conversations
         chat_id: str = msg.get("chat_id", "") or msg.get("from", "")
         if chat_id.endswith("@g.us"):
             log.info(f"Skipping group message from {chat_id}")
             continue
 
-        # Extract sender number and message body
         sender: str = msg.get("from", "") or chat_id
         if "@" in sender:
             sender = sender.split("@")[0]
@@ -150,8 +165,7 @@ async def whatsapp_reply(request: Request):
             body = msg.get("body", "") or msg.get("text", "")
 
         body = body.strip()
-        msg_type = msg.get("type", "")
-        log.info(f"WhatsApp reply from {sender}: '{body}' type={msg_type} raw={msg}")
+        log.info(f"WhatsApp message from {sender}: '{body}' type={msg.get('type','')}")
 
         if not body:
             continue
@@ -162,31 +176,38 @@ async def whatsapp_reply(request: Request):
         if sender == owner:
             if upper == "AI ON":
                 _ai_replies_enabled = True
-                send_whatsapp(owner, "AI replies enabled. I will respond to incoming messages.")
-                continue
+                send_whatsapp(owner, "AI replies enabled. I will respond to incoming messages.", whapi_token=whapi_token)
             elif upper == "AI OFF":
                 _ai_replies_enabled = False
-                send_whatsapp(owner, "AI replies disabled.")
-                continue
+                send_whatsapp(owner, "AI replies disabled.", whapi_token=whapi_token)
             elif upper == "REDIRECT ON":
                 _redirect_enabled = True
-                send_whatsapp(owner, "Call redirect enabled. Incoming WhatsApp messages will be directed to call the Telnyx number.")
-                continue
+                send_whatsapp(owner, "Call redirect enabled.", whapi_token=whapi_token)
             elif upper == "REDIRECT OFF":
                 _redirect_enabled = False
-                send_whatsapp(owner, "Call redirect disabled.")
-                continue
+                send_whatsapp(owner, "Call redirect disabled.", whapi_token=whapi_token)
+            else:
+                stage = _detect_stage(upper)
+                if stage:
+                    _handle_done_reply(stage=stage)
+            continue
 
-        stage = _detect_stage(upper)
-        if stage:
-            _handle_done_reply(stage=stage)
-        else:
-            if _redirect_enabled and sender != owner:
-                send_whatsapp(sender, REDIRECT_MESSAGE)
-            if _ai_replies_enabled and sender != owner:
-                ai_response = _ai_whatsapp_reply(sender, body)
-                if ai_response:
-                    send_whatsapp(sender, ai_response)
+        # Non-owner messages — only act when AI is on
+        if _ai_replies_enabled:
+            if _redirect_enabled:
+                send_whatsapp(sender, REDIRECT_MESSAGE, whapi_token=whapi_token)
+            else:
+                background_tasks.add_task(
+                    _handle_whatsapp_message,
+                    phone=sender,
+                    body=body,
+                    whapi_token=whapi_token,
+                    owner_whatsapp=owner,
+                    business_name=DEFAULT_CLIENT.get("business_name", ""),
+                    business_type=DEFAULT_CLIENT.get("business_type", ""),
+                    twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
+                    twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+                )
 
     return {"status": "success"}
 
