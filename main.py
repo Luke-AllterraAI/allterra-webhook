@@ -19,7 +19,7 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
-_wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "template")  # override via env or REPLY AI/TEMPLATE command
+_wa_reply_mode: str = "template"   # for message replies only — owner sends "REPLY AI" / "REPLY TEMPLATE"
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
