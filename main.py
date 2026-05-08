@@ -19,13 +19,7 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
-_redirect_enabled: bool = False    # owner must send "REDIRECT ON" to activate
 _wa_reply_mode: str = "template"   # owner sends "REPLY AI" or "REPLY TEMPLATE" to switch
-
-REDIRECT_MESSAGE = (
-    "Hi! 👋 Thanks for reaching out. For immediate assistance please call us on "
-    "*+27 60 071 6833* — our AI receptionist is available 24/7 and will take your details right away."
-)
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -223,12 +217,6 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             elif upper == "AI OFF":
                 _ai_replies_enabled = False
                 send_whatsapp(owner, "AI replies disabled.", whapi_token=whapi_token)
-            elif upper == "REDIRECT ON":
-                _redirect_enabled = True
-                send_whatsapp(owner, "Call redirect enabled.", whapi_token=whapi_token)
-            elif upper == "REDIRECT OFF":
-                _redirect_enabled = False
-                send_whatsapp(owner, "Call redirect disabled.", whapi_token=whapi_token)
             elif upper == "REPLY AI":
                 _wa_reply_mode = "ai"
                 send_whatsapp(owner, "WhatsApp auto-replies switched to AI mode. 🤖", whapi_token=whapi_token)
@@ -243,10 +231,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
 
         # Non-owner messages — only act when AI is on
         if _ai_replies_enabled:
-            if _redirect_enabled:
-                send_whatsapp(sender, REDIRECT_MESSAGE, whapi_token=whapi_token)
-            else:
-                background_tasks.add_task(
+            background_tasks.add_task(
                     _handle_whatsapp_message,
                     phone=sender,
                     body=body,
