@@ -20,6 +20,8 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = os.getenv("AI_REPLIES_ENABLED", "false").lower() == "true"
 _wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "ai")
+# Numbers that received a missed call auto-reply — AI continues conversation with them
+_active_ai_conversations: set[str] = set()
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -240,8 +242,16 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
                     _handle_done_reply(stage=stage)
             continue
 
-        # Non-owner messages — only act when AI is on
-        if _ai_replies_enabled:
+        # Non-owner messages
+        if sender in _active_ai_conversations:
+            # Continue the conversation started by a missed call
+            ai_response = _ai_whatsapp_reply(
+                sender, body,
+                system_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt"),
+            )
+            if ai_response:
+                send_whatsapp(sender, ai_response, whapi_token=whapi_token)
+        elif _ai_replies_enabled:
             background_tasks.add_task(
                     _handle_whatsapp_message,
                     phone=sender,
@@ -502,6 +512,9 @@ def _handle_whatsapp_missed_call(
         else:
             auto_reply = _missed_call_template(business_name)
         send_whatsapp(phone, auto_reply, whapi_token=whapi_token)
+        # Mark this number as an active AI conversation so replies are handled by AI
+        _active_ai_conversations.add(phone)
+        log.info(f"Added {phone} to active AI conversations")
     except Exception as e:
         log.error(f"_handle_whatsapp_missed_call auto-reply error: {e}")
 
@@ -795,7 +808,7 @@ If someone wants to book a meeting or get a quote, encourage them to do so and l
 Never make up pricing or specific technical details you don't know — offer to have someone from the team reach out instead."""
 
 
-def _ai_whatsapp_reply(sender: str, message: str) -> str | None:
+def _ai_whatsapp_reply(sender: str, message: str, system_prompt: str = None) -> str | None:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         log.warning("ANTHROPIC_API_KEY not set — skipping AI reply")
@@ -803,7 +816,6 @@ def _ai_whatsapp_reply(sender: str, message: str) -> str | None:
     try:
         history = _conversations.setdefault(sender, [])
         history.append({"role": "user", "content": message})
-        # Keep last 20 messages to avoid excessive token usage
         if len(history) > 20:
             history[:] = history[-20:]
 
@@ -811,7 +823,7 @@ def _ai_whatsapp_reply(sender: str, message: str) -> str | None:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=300,
-            system=WHATSAPP_AI_SYSTEM,
+            system=system_prompt or WHATSAPP_AI_SYSTEM,
             messages=history,
         )
         reply = response.content[0].text.strip()
