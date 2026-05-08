@@ -18,8 +18,8 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
-_ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
-_wa_reply_mode: str = "template"   # for message replies only — owner sends "REPLY AI" / "REPLY TEMPLATE"
+_ai_replies_enabled: bool = os.getenv("AI_REPLIES_ENABLED", "false").lower() == "true"
+_wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "ai")
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -85,6 +85,16 @@ DEFAULT_CLIENT: dict = {
     "owner_whatsapp":     os.getenv("OWNER_WHATSAPP", "27837088951"),
     "whapi_token":        os.getenv("WHAPI_TOKEN"),
     "whatsapp_mode":      "off",
+    "whatsapp_reply_mode": "template",
+    "whatsapp_ai_prompt": (
+        "You are a friendly and professional AI assistant for Allterra AI, "
+        "a South African company that provides AI-powered voice receptionist solutions for businesses. "
+        "Someone just tried to reach us via WhatsApp. "
+        "Write a short, warm WhatsApp reply (2-3 sentences max). "
+        "Acknowledge their call or message, let them know someone will be in touch shortly, "
+        "and mention they can also call our number directly where an AI receptionist is available 24/7. "
+        "Never make up details. Keep it conversational — this is WhatsApp, not email."
+    ),
 }
 
 
@@ -602,6 +612,41 @@ def _create_twenty_contact_from_whatsapp(phone: str, twenty_api_key: str, twenty
     except Exception as e:
         log.error(f"_create_twenty_contact_from_whatsapp error: {e}")
         return None
+
+
+# ── Admin toggles ─────────────────────────────────────────────────────────────
+# Hit these URLs from a browser to change modes at runtime.
+# Protected by ADMIN_KEY env var.
+
+@app.get("/admin/{command}")
+def admin_toggle(command: str, key: str = ""):
+    global _ai_replies_enabled, _wa_reply_mode
+
+    admin_key = os.getenv("ADMIN_KEY", "")
+    if not admin_key or key != admin_key:
+        return {"error": "Unauthorized"}
+
+    command = command.lower()
+    if command == "ai-on":
+        _ai_replies_enabled = True
+        return {"status": "ok", "ai_replies": True}
+    elif command == "ai-off":
+        _ai_replies_enabled = False
+        return {"status": "ok", "ai_replies": False}
+    elif command == "reply-ai":
+        _wa_reply_mode = "ai"
+        return {"status": "ok", "reply_mode": "ai"}
+    elif command == "reply-template":
+        _wa_reply_mode = "template"
+        return {"status": "ok", "reply_mode": "template"}
+    elif command == "status":
+        return {
+            "status": "ok",
+            "ai_replies": _ai_replies_enabled,
+            "reply_mode": _wa_reply_mode,
+        }
+    else:
+        return {"error": f"Unknown command: {command}"}
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
