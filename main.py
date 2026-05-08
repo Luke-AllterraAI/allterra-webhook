@@ -26,37 +26,55 @@ REDIRECT_MESSAGE = (
     "*+27 60 071 6833* — our AI receptionist is available 24/7 and will take your details right away."
 )
 
-# Shared credentials
-WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
 # ── Client config — keyed by the Telnyx number callers dial (to_number) ──────
-# Add a new entry here for each client you onboard.
-# twenty_api_key / twenty_api_url can be per-client or fall back to env vars.
+#
+# CORE (every client):
+#   business_name         — displayed in WhatsApp notifications and CRM
+#   telnyx_from_number    — the Telnyx number Retell uses for this client
+#   twenty_api_key        — Twenty CRM API key
+#   twenty_api_url        — Twenty CRM Railway URL
+#   owner_whatsapp        — owner's WhatsApp number for call summary notifications
+#   whapi_token           — Whapi token for sending call summaries
+#
+# ADD-ON (optional):
+#   whatsapp_bot          — True to enable AI conversation assistant on dedicated WhatsApp number
+#
 CLIENTS: dict[str, dict] = {
     "+27600716833": {
-        "business_name": "Allterra AI",
-        "owner_whatsapp": "27837088951",
+        # ── Core ──
+        "business_name":      "Allterra AI",
         "telnyx_from_number": "+27600716833",
-        "twenty_api_key": os.getenv("TWENTY_API_KEY"),
-        "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
+        "twenty_api_key":     os.getenv("TWENTY_API_KEY"),
+        "twenty_api_url":     os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
+        "owner_whatsapp":     "27837088951",
+        "whapi_token":        os.getenv("WHAPI_TOKEN"),
+        # ── Add-on ──
+        "whatsapp_bot":       True,
     },
     "+27600485594": {
-        "business_name": "Renewable Plumbing and Solar Experts",
-        "owner_whatsapp": "27748887981",
+        # ── Core ──
+        "business_name":      "Renewable Plumbing and Solar Experts",
         "telnyx_from_number": "+27600485594",
-        "twenty_api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTgxNTAyLCJleHAiOjQ5MzE2OTUxMDEsImp0aSI6ImFlYmUwNzc1LTRmYTYtNGFlMy1hZjU3LTMyMzZhN2UwZWFlNiJ9.LFncKK8Jt-54houNowblF0oDd_keWqRgzR0c8SYVqtE",
-        "twenty_api_url": "https://twenty-production-9955.up.railway.app",
+        "twenty_api_key":     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3M2U1ZDJhNi0wNDcyLTRiNDktYWUyYi05ZTY2MjFmNzczNmYiLCJ0eXBlIjoiQVBJX0tFWSIsIndvcmtzcGFjZUlkIjoiNzNlNWQyYTYtMDQ3Mi00YjQ5LWFlMmItOWU2NjIxZjc3MzZmIiwiaWF0IjoxNzc4MTgxNTAyLCJleHAiOjQ5MzE2OTUxMDEsImp0aSI6ImFlYmUwNzc1LTRmYTYtNGFlMy1hZjU3LTMyMzZhN2UwZWFlNiJ9.LFncKK8Jt-54houNowblF0oDd_keWqRgzR0c8SYVqtE",
+        "twenty_api_url":     "https://twenty-production-9955.up.railway.app",
+        "owner_whatsapp":     "27748887981",
+        "whapi_token":        os.getenv("WHAPI_TOKEN"),
+        # ── Add-on ──
+        "whatsapp_bot":       False,  # enable when client gets dedicated WhatsApp number
     },
 }
 
 # Fallback for unknown numbers
 DEFAULT_CLIENT: dict = {
-    "business_name": "Allterra AI",
-    "owner_whatsapp": os.getenv("OWNER_WHATSAPP", "27837088951"),
+    "business_name":      "Allterra AI",
     "telnyx_from_number": os.getenv("TELNYX_FROM_NUMBER", ""),
-    "twenty_api_key": os.getenv("TWENTY_API_KEY"),
-    "twenty_api_url": os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
+    "twenty_api_key":     os.getenv("TWENTY_API_KEY"),
+    "twenty_api_url":     os.getenv("TWENTY_API_URL", "https://api.twenty.com"),
+    "owner_whatsapp":     os.getenv("OWNER_WHATSAPP", "27837088951"),
+    "whapi_token":        os.getenv("WHAPI_TOKEN"),
+    "whatsapp_bot":       False,
 }
 
 
@@ -314,11 +332,12 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
 
     # ── Resolve client config from to_number ─────────────────────────────────
     client = get_client(to_number, metadata)
-    owner_whatsapp: str = client["owner_whatsapp"]
+    owner_whatsapp: str = client.get("owner_whatsapp", "")
     business_name: str = client["business_name"]
     telnyx_from: str = client["telnyx_from_number"]
     twenty_api_key: str = client["twenty_api_key"] or ""
     twenty_api_url: str = client["twenty_api_url"]
+    whapi_token: str = client.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
 
     # ── Custom analysis fields — Retell puts them under custom_analysis_data ──
     # Strip whitespace from keys in case of accidental spaces in Retell config
@@ -352,6 +371,7 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
         urgency_label=urgency_label,
         twenty_api_key=twenty_api_key,
         twenty_api_url=twenty_api_url,
+        whapi_token=whapi_token,
     )
 
     return {"status": "success"}
@@ -360,19 +380,22 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
 def process_call(
     caller_name, from_number, owner_whatsapp, business_name, telnyx_from,
     property_address, job_description, callback_time, call_summary, urgency_label,
-    twenty_api_key, twenty_api_url,
+    twenty_api_key, twenty_api_url, whapi_token=None,
 ):
-    wa_message = (
-        f"*INCOMING CALL — {business_name}* [{urgency_label}]\n\n"
-        f"*Name:* {caller_name}\n"
-        f"*Number:* {from_number}\n"
-        f"*Address:* {property_address}\n"
-        f"*Job:* {job_description}\n"
-        f"*Callback:* {callback_time}\n\n"
-        f"*Summary:* {call_summary}\n\n"
-        f"_Reply DONE when contacted_"
-    )
-    send_whatsapp(owner_whatsapp, wa_message)
+    if owner_whatsapp and whapi_token:
+        wa_message = (
+            f"*INCOMING CALL — {business_name}* [{urgency_label}]\n\n"
+            f"*Name:* {caller_name}\n"
+            f"*Number:* {from_number}\n"
+            f"*Address:* {property_address}\n"
+            f"*Job:* {job_description}\n"
+            f"*Callback:* {callback_time}\n\n"
+            f"*Summary:* {call_summary}\n\n"
+            f"_Reply DONE when contacted_"
+        )
+        send_whatsapp(owner_whatsapp, wa_message, whapi_token=whapi_token)
+    else:
+        log.info(f"WhatsApp notification skipped for {business_name} — no whapi_token configured")
 
     sms_text = (
         f"Hi {caller_name} — thanks for calling {business_name}! "
@@ -433,15 +456,19 @@ def _ai_whatsapp_reply(sender: str, message: str) -> str | None:
 
 # ── WhatsApp via Whapi ────────────────────────────────────────────────────────
 
-def send_whatsapp(to: str, message: str):
+def send_whatsapp(to: str, message: str, whapi_token: str = None):
+    token = whapi_token or os.getenv("WHAPI_TOKEN")
     try:
         if not to:
             log.warning("send_whatsapp: no recipient number, skipping")
             return
+        if not token:
+            log.warning("send_whatsapp: no Whapi token available, skipping")
+            return
         # Normalise to bare digits — Whapi expects "27831234567@s.whatsapp.net"
         number = to.lstrip("+").split("@")[0]
         headers = {
-            "Authorization": f"Bearer {WHAPI_TOKEN}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
         payload = {"to": f"{number}@s.whatsapp.net", "body": message}
