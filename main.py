@@ -123,21 +123,26 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
     owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
 
     # ── Missed calls — always auto-reply, no toggle needed ───────────────────
+    # Whapi may send calls in a dedicated "calls" array or as messages with type="call"
+    def _dispatch_missed_call(caller_jid: str):
+        phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
+        if not phone:
+            return
+        log.info(f"Missed WhatsApp call from {phone}")
+        background_tasks.add_task(
+            _handle_whatsapp_missed_call,
+            phone=phone,
+            whapi_token=whapi_token,
+            owner_whatsapp=owner,
+            business_name=DEFAULT_CLIENT.get("business_name", ""),
+            business_type=DEFAULT_CLIENT.get("business_type", ""),
+            twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
+            twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+        )
+
     for call in (data.get("calls") or []):
         if call.get("type") == "missed":
-            caller_jid: str = call.get("from", "")
-            phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
-            log.info(f"Missed WhatsApp call from {phone}")
-            background_tasks.add_task(
-                _handle_whatsapp_missed_call,
-                phone=phone,
-                whapi_token=whapi_token,
-                owner_whatsapp=owner,
-                business_name=DEFAULT_CLIENT.get("business_name", ""),
-                business_type=DEFAULT_CLIENT.get("business_type", ""),
-                twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
-                twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
-            )
+            _dispatch_missed_call(call.get("from", ""))
 
     # ── Inbound messages ─────────────────────────────────────────────────────
     messages = data.get("messages") or []
@@ -159,6 +164,16 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         if msg.get("from_me") and sender != owner:
             continue
 
+        msg_type = msg.get("type", "")
+
+        # Missed call sent as a message event
+        if msg_type == "call":
+            call_status = (msg.get("call") or {}).get("type", "") or msg.get("status", "")
+            log.info(f"WhatsApp call event from {sender}: status={call_status}")
+            if call_status in ("missed", "") and sender != owner:
+                _dispatch_missed_call(sender)
+            continue
+
         body: str = ""
         if isinstance(msg.get("text"), dict):
             body = msg["text"].get("body", "")
@@ -166,7 +181,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             body = msg.get("body", "") or msg.get("text", "")
 
         body = body.strip()
-        log.info(f"WhatsApp message from {sender}: '{body}' type={msg.get('type','')}")
+        log.info(f"WhatsApp message from {sender}: '{body}' type={msg_type}")
 
         if not body:
             continue
