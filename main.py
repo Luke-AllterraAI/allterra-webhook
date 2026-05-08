@@ -146,9 +146,6 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         messages = [msg]
 
     for msg in messages:
-        if msg.get("from_me"):
-            continue
-
         chat_id: str = msg.get("chat_id", "") or msg.get("from", "")
         if chat_id.endswith("@g.us"):
             log.info(f"Skipping group message from {chat_id}")
@@ -157,6 +154,10 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         sender: str = msg.get("from", "") or chat_id
         if "@" in sender:
             sender = sender.split("@")[0]
+
+        # Skip bot's own outgoing messages to customers, but keep owner self-messages
+        if msg.get("from_me") and sender != owner:
+            continue
 
         body: str = ""
         if isinstance(msg.get("text"), dict):
