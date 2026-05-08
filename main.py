@@ -19,7 +19,7 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = os.getenv("AI_REPLIES_ENABLED", "false").lower() == "true"
-_wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "ai")
+_wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "off")
 # Numbers that received a missed call auto-reply — AI continues conversation with them
 _active_ai_conversations: set[str] = set()
 # Dedup missed calls — tracks last handled time per number
@@ -206,6 +206,9 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
     # ── Missed calls — always auto-reply, no toggle needed ───────────────────
     # Whapi may send calls in a dedicated "calls" array or as messages with type="call"
     def _dispatch_missed_call(caller_jid: str):
+        if _wa_reply_mode == "off":
+            log.info("WA_REPLY_MODE=off — skipping missed call auto-reply")
+            return
         phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
         if not phone:
             return
