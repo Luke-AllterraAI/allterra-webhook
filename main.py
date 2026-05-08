@@ -19,7 +19,7 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
-_wa_reply_mode: str = "template"   # owner sends "REPLY AI" or "REPLY TEMPLATE" to switch
+_wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "template")  # override via env or REPLY AI/TEMPLATE command
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -169,8 +169,9 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         if "@" in sender:
             sender = sender.split("@")[0]
 
-        # Skip bot's own outgoing messages to customers, but keep owner self-messages
-        if msg.get("from_me") and sender != owner:
+        # Skip bot's outgoing messages to customers (from_me=True, chat is NOT owner's own chat)
+        # Keep only genuine self-messages where the owner is messaging their own number
+        if msg.get("from_me") and chat_id.split("@")[0] != owner:
             continue
 
         msg_type = msg.get("type", "")
