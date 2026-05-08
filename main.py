@@ -19,6 +19,12 @@ _DEDUP_WINDOW = 300  # seconds — blocks duplicate calls from same from/to with
 # WhatsApp AI conversation history — keyed by sender phone number
 _conversations: dict[str, list] = {}
 _ai_replies_enabled: bool = False  # owner must send "AI ON" to activate
+_redirect_enabled: bool = False    # owner must send "REDIRECT ON" to activate
+
+REDIRECT_MESSAGE = (
+    "Hi! 👋 Thanks for reaching out. For immediate assistance please call us on "
+    "*+27 60 071 6833* — our AI receptionist is available 24/7 and will take your details right away."
+)
 
 # Shared credentials
 WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
@@ -121,7 +127,8 @@ async def whatsapp_reply(request: Request):
             body = msg.get("body", "") or msg.get("text", "")
 
         body = body.strip()
-        log.info(f"WhatsApp reply from {sender}: '{body}'")
+        msg_type = msg.get("type", "")
+        log.info(f"WhatsApp reply from {sender}: '{body}' type={msg_type} raw={msg}")
 
         if not body:
             continue
@@ -138,14 +145,25 @@ async def whatsapp_reply(request: Request):
                 _ai_replies_enabled = False
                 send_whatsapp(owner, "AI replies disabled.")
                 continue
+            elif upper == "REDIRECT ON":
+                _redirect_enabled = True
+                send_whatsapp(owner, "Call redirect enabled. Incoming WhatsApp messages will be directed to call the Telnyx number.")
+                continue
+            elif upper == "REDIRECT OFF":
+                _redirect_enabled = False
+                send_whatsapp(owner, "Call redirect disabled.")
+                continue
 
         stage = _detect_stage(upper)
         if stage:
             _handle_done_reply(stage=stage)
-        elif _ai_replies_enabled and sender != owner:
-            ai_response = _ai_whatsapp_reply(sender, body)
-            if ai_response:
-                send_whatsapp(sender, ai_response)
+        else:
+            if _redirect_enabled and sender != owner:
+                send_whatsapp(sender, REDIRECT_MESSAGE)
+            if _ai_replies_enabled and sender != owner:
+                ai_response = _ai_whatsapp_reply(sender, body)
+                if ai_response:
+                    send_whatsapp(sender, ai_response)
 
     return {"status": "success"}
 
