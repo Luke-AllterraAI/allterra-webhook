@@ -241,6 +241,27 @@ def _handle_done_reply(stage: str = "MEETING_BOOKED"):
         log.error(f"handle_done_reply error: {e}")
 
 
+# ── Telnyx inbound SMS ────────────────────────────────────────────────────────
+
+@app.post("/telnyx-sms")
+async def telnyx_sms(request: Request):
+    try:
+        data = await request.json()
+        payload = data.get("data", {}).get("payload", {})
+        from_number = (payload.get("from") or {}).get("phone_number", "Unknown")
+        to_list = payload.get("to") or []
+        to_number = to_list[0].get("phone_number", "Unknown") if to_list else "Unknown"
+        text = payload.get("text", "")
+        log.info(f"Telnyx SMS received — from={from_number} to={to_number} text={text}")
+        # Forward to owner WhatsApp so verification codes are visible instantly
+        owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
+        if owner and text:
+            send_whatsapp(owner, f"📩 *SMS to {to_number}*\nFrom: {from_number}\n\n{text}")
+    except Exception as e:
+        log.error(f"telnyx-sms error: {e}")
+    return {"status": "success"}
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 @app.get("/")
