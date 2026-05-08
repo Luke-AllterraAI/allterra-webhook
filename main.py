@@ -55,6 +55,16 @@ CLIENTS: dict[str, dict] = {
         "whapi_token":        os.getenv("WHAPI_TOKEN"),
         # ── Add-on ──
         "whatsapp_mode":      "all_messages",
+        "whatsapp_reply_mode": "ai",
+        "whatsapp_ai_prompt": (
+            "You are a friendly and professional AI assistant for Allterra AI, "
+            "a South African company that provides AI-powered voice receptionist solutions for businesses. "
+            "Someone just tried to reach us via WhatsApp. "
+            "Write a short, warm WhatsApp reply (2-3 sentences max). "
+            "Acknowledge their call or message, let them know someone will be in touch shortly, "
+            "and mention they can also call our number directly where an AI receptionist is available 24/7. "
+            "Never make up details. Keep it conversational — this is WhatsApp, not email."
+        ),
     },
     "+27600485594": {
         # ── Core ──
@@ -138,6 +148,8 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             business_type=DEFAULT_CLIENT.get("business_type", ""),
             twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
             twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+            reply_mode=DEFAULT_CLIENT.get("whatsapp_reply_mode", "template"),
+            ai_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt", ""),
         )
 
     for call in (data.get("calls") or []):
@@ -237,6 +249,8 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
                     business_type=DEFAULT_CLIENT.get("business_type", ""),
                     twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
                     twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+                    reply_mode=DEFAULT_CLIENT.get("whatsapp_reply_mode", "template"),
+                    ai_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt", ""),
                 )
 
     return {"status": "success"}
@@ -424,8 +438,47 @@ def is_contact_saved(phone: str, whapi_token: str) -> bool:
         return False
 
 
+def _missed_call_template(business_name: str) -> str:
+    return (
+        f"Hi! You just tried calling *{business_name}* via WhatsApp. "
+        f"We've noted your call and someone will be in touch with you shortly. "
+        f"Alternatively, call us directly and our AI receptionist is available 24/7. 😊"
+    )
+
+
+def _message_template(business_name: str, business_type: str) -> str:
+    return (
+        f"Hi! Thanks for reaching out to *{business_name}*. "
+        f"We've received your message and someone will be in touch shortly. "
+        f"For urgent {business_type} needs, you can also call us directly — "
+        f"our AI receptionist is available 24/7. 😊"
+    )
+
+
+def _generate_wa_ai_reply(system_prompt: str, context: str) -> str | None:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        log.warning("ANTHROPIC_API_KEY not set — skipping AI reply")
+        return None
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=system_prompt,
+            messages=[{"role": "user", "content": context}],
+        )
+        reply = response.content[0].text.strip()
+        log.info(f"AI WA reply generated: {reply}")
+        return reply
+    except Exception as e:
+        log.error(f"_generate_wa_ai_reply error: {e}")
+        return None
+
+
 def _handle_whatsapp_missed_call(
-    phone, whapi_token, owner_whatsapp, business_name, business_type, twenty_api_key, twenty_api_url
+    phone, whapi_token, owner_whatsapp, business_name, business_type,
+    twenty_api_key, twenty_api_url, reply_mode="template", ai_prompt="",
 ):
     try:
         saved = is_contact_saved(phone, whapi_token)
@@ -438,11 +491,13 @@ def _handle_whatsapp_missed_call(
         return
 
     try:
-        auto_reply = (
-            f"Hi! You just tried calling *{business_name}* via WhatsApp. "
-            f"We've noted your call and someone will be in touch with you shortly. "
-            f"Alternatively, call us directly and our AI receptionist will take your details right away. 😊"
-        )
+        if reply_mode == "ai" and ai_prompt:
+            auto_reply = _generate_wa_ai_reply(
+                ai_prompt,
+                f"The person just tried to call {business_name} via WhatsApp but the call wasn't answered.",
+            ) or _missed_call_template(business_name)
+        else:
+            auto_reply = _missed_call_template(business_name)
         send_whatsapp(phone, auto_reply, whapi_token=whapi_token)
     except Exception as e:
         log.error(f"_handle_whatsapp_missed_call auto-reply error: {e}")
@@ -465,7 +520,8 @@ def _handle_whatsapp_missed_call(
 
 
 def _handle_whatsapp_message(
-    phone, body, whapi_token, owner_whatsapp, business_name, business_type, twenty_api_key, twenty_api_url
+    phone, body, whapi_token, owner_whatsapp, business_name, business_type,
+    twenty_api_key, twenty_api_url, reply_mode="template", ai_prompt="",
 ):
     try:
         saved = is_contact_saved(phone, whapi_token)
@@ -478,12 +534,13 @@ def _handle_whatsapp_message(
         return
 
     try:
-        auto_reply = (
-            f"Hi! Thanks for reaching out to *{business_name}*. "
-            f"We've received your message and someone will be in touch shortly. "
-            f"For urgent {business_type} needs, you can also call us directly — "
-            f"our AI receptionist is available 24/7. 😊"
-        )
+        if reply_mode == "ai" and ai_prompt:
+            auto_reply = _generate_wa_ai_reply(
+                ai_prompt,
+                f"The person sent this message to {business_name}: \"{body}\"",
+            ) or _message_template(business_name, business_type)
+        else:
+            auto_reply = _message_template(business_name, business_type)
         send_whatsapp(phone, auto_reply, whapi_token=whapi_token)
     except Exception as e:
         log.error(f"_handle_whatsapp_message auto-reply error: {e}")
