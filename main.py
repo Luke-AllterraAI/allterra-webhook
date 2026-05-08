@@ -25,6 +25,8 @@ _active_ai_conversations: set[str] = set()
 # Dedup missed calls — tracks last handled time per number
 _recent_wa_calls: dict[str, float] = {}
 _WA_CALL_DEDUP_WINDOW = 60  # seconds
+# Track answered call IDs so we don't treat them as missed when they end
+_answered_wa_calls: set[str] = set()
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -195,9 +197,17 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         )
 
     for call in (data.get("calls") or []):
-        log.info(f"WhatsApp call: from={call.get('from')} status={call.get('status')}")
-        if call.get("status") not in ("initiated", "ringing", "answered"):
-            _dispatch_missed_call(call.get("from", ""))
+        call_id = call.get("id", "")
+        status = call.get("status")
+        log.info(f"WhatsApp call: from={call.get('from')} status={status} id={call_id}")
+        if status == "answered":
+            _answered_wa_calls.add(call_id)
+        elif status not in ("initiated", "ringing"):
+            if call_id in _answered_wa_calls:
+                _answered_wa_calls.discard(call_id)
+                log.info(f"Call {call_id} was answered — skipping missed call handler")
+            else:
+                _dispatch_missed_call(call.get("from", ""))
 
     # ── Inbound messages ─────────────────────────────────────────────────────
     messages = data.get("messages") or []
