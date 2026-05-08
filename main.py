@@ -22,6 +22,9 @@ _ai_replies_enabled: bool = os.getenv("AI_REPLIES_ENABLED", "false").lower() == 
 _wa_reply_mode: str = os.getenv("WA_REPLY_MODE", "ai")
 # Numbers that received a missed call auto-reply — AI continues conversation with them
 _active_ai_conversations: set[str] = set()
+# Dedup missed calls — tracks last handled time per number
+_recent_wa_calls: dict[str, float] = {}
+_WA_CALL_DEDUP_WINDOW = 60  # seconds
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -145,6 +148,11 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
         if not phone:
             return
+        now = _time.time()
+        if phone in _recent_wa_calls and now - _recent_wa_calls[phone] < _WA_CALL_DEDUP_WINDOW:
+            log.info(f"Duplicate missed call ignored for {phone}")
+            return
+        _recent_wa_calls[phone] = now
         log.info(f"Missed WhatsApp call from {phone}")
         background_tasks.add_task(
             _handle_whatsapp_missed_call,
@@ -523,16 +531,7 @@ def _handle_whatsapp_missed_call(
     except Exception as e:
         log.error(f"_handle_whatsapp_missed_call CRM error: {e}")
 
-    try:
-        if owner_whatsapp:
-            msg = (
-                f"📞 *Missed WhatsApp Call — {business_name}*\n\n"
-                f"*Number:* +{phone}\n"
-                f"_Unknown contact — auto-reply sent & CRM contact created_"
-            )
-            send_whatsapp(owner_whatsapp, msg, whapi_token=whapi_token)
-    except Exception as e:
-        log.error(f"_handle_whatsapp_missed_call owner notify error: {e}")
+    log.info(f"Missed call handled for {phone} — auto-reply sent, owner notification skipped (visible in chat)")
 
 
 def _handle_whatsapp_message(
