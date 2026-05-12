@@ -258,18 +258,23 @@ def _normalise_za_number(number: str) -> str:
 # ── WhatsApp reply webhook ────────────────────────────────────────────────────
 
 @app.post("/whatsapp-reply")
-async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
+async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks, telnyx: str = None):
     try:
         data = await request.json()
     except Exception as e:
         log.error(f"whatsapp-reply parse error: {e}")
         return {"status": "success"}
 
-    log.info(f"whatsapp-reply payload: {data}")
+    log.info(f"whatsapp-reply telnyx={telnyx} payload: {data}")
 
     global _ai_replies_enabled, _wa_reply_mode
-    whapi_token = DEFAULT_CLIENT.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
-    owner = DEFAULT_CLIENT.get("owner_whatsapp", "")
+    # Resolve client from telnyx query param (set by each Whapi channel's webhook URL)
+    client = CLIENTS.get(telnyx) if telnyx else DEFAULT_CLIENT
+    if not client:
+        client = DEFAULT_CLIENT
+    tenant = client.get("business_name", "default")
+    whapi_token = client.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
+    owner = client.get("owner_whatsapp", "")
 
     # ── Missed calls — always auto-reply, no toggle needed ───────────────────
     # Whapi may send calls in a dedicated "calls" array or as messages with type="call"
@@ -280,8 +285,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
         if not phone:
             return
-        log_event("whatsapp_missed_call", tenant=DEFAULT_CLIENT.get("business_name", "default"),
-                  metadata={"from": phone})
+        log_event("whatsapp_missed_call", tenant=tenant, metadata={"from": phone})
         now = _time.time()
         if phone in _recent_wa_calls and now - _recent_wa_calls[phone] < _WA_CALL_DEDUP_WINDOW:
             log.info(f"Duplicate missed call ignored for {phone}")
@@ -293,12 +297,12 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             phone=phone,
             whapi_token=whapi_token,
             owner_whatsapp=owner,
-            business_name=DEFAULT_CLIENT.get("business_name", ""),
-            business_type=DEFAULT_CLIENT.get("business_type", ""),
-            twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
-            twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+            business_name=client.get("business_name", ""),
+            business_type=client.get("business_type", ""),
+            twenty_api_key=client.get("twenty_api_key", ""),
+            twenty_api_url=client.get("twenty_api_url", ""),
             reply_mode=_wa_reply_mode,
-            ai_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt", ""),
+            ai_prompt=client.get("whatsapp_ai_prompt", ""),
         )
 
     for call in (data.get("calls") or []):
@@ -366,7 +370,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
 
         body = body.strip()
         log.info(f"WhatsApp message from {sender}: '{body}' type={msg_type}")
-        log_event("whatsapp_message_received", tenant=DEFAULT_CLIENT.get("business_name", "default"),
+        log_event("whatsapp_message_received", tenant=tenant,
                   metadata={"from": sender, "body_preview": body[:120]})
 
         if not body:
@@ -399,7 +403,7 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
             # Continue the conversation started by a missed call
             ai_response = _ai_whatsapp_reply(
                 sender, body,
-                system_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt"),
+                system_prompt=client.get("whatsapp_ai_prompt"),
             )
             if ai_response:
                 send_whatsapp(sender, ai_response, whapi_token=whapi_token)
@@ -410,12 +414,12 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
                     body=body,
                     whapi_token=whapi_token,
                     owner_whatsapp=owner,
-                    business_name=DEFAULT_CLIENT.get("business_name", ""),
-                    business_type=DEFAULT_CLIENT.get("business_type", ""),
-                    twenty_api_key=DEFAULT_CLIENT.get("twenty_api_key", ""),
-                    twenty_api_url=DEFAULT_CLIENT.get("twenty_api_url", ""),
+                    business_name=client.get("business_name", ""),
+                    business_type=client.get("business_type", ""),
+                    twenty_api_key=client.get("twenty_api_key", ""),
+                    twenty_api_url=client.get("twenty_api_url", ""),
                     reply_mode=_wa_reply_mode,
-                    ai_prompt=DEFAULT_CLIENT.get("whatsapp_ai_prompt", ""),
+                    ai_prompt=client.get("whatsapp_ai_prompt", ""),
                 )
 
     return {"status": "success"}
