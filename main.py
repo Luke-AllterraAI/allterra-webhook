@@ -2,6 +2,9 @@ from fastapi import FastAPI, Request, BackgroundTasks
 import os
 import requests
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import anthropic
 
@@ -44,6 +47,10 @@ TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 # ADD-ON (optional):
 #   whatsapp_mode         — "off" | "missed_calls_only" | "all_messages"
 #                           Controls the /whatsapp-event endpoint behaviour
+#   servcraft_api_key     — ServCraft REST API key for job card auto-creation
+#   servcraft_base_url    — ServCraft API base URL (defaults to SERVCRAFT_BASE_URL env var)
+#   servcraft_email_to_job — Email address that ServCraft uses for email-to-job ingestion
+#                            (acts as both API fallback and redundancy when API is available)
 #
 CLIENTS: dict[str, dict] = {
     "+27600716833": {
@@ -791,6 +798,9 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
     twenty_api_key: str = client["twenty_api_key"] or ""
     twenty_api_url: str = client["twenty_api_url"]
     whapi_token: str = client.get("whapi_token") or os.getenv("WHAPI_TOKEN", "")
+    servcraft_api_key: str = client.get("servcraft_api_key") or ""
+    servcraft_base_url: str = client.get("servcraft_base_url") or os.getenv("SERVCRAFT_BASE_URL", "")
+    servcraft_email_to_job: str = client.get("servcraft_email_to_job") or ""
 
     # ── Custom analysis fields — Retell puts them under custom_analysis_data ──
     # Strip whitespace from keys in case of accidental spaces in Retell config
@@ -825,6 +835,9 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
         twenty_api_key=twenty_api_key,
         twenty_api_url=twenty_api_url,
         whapi_token=whapi_token,
+        servcraft_api_key=servcraft_api_key,
+        servcraft_base_url=servcraft_base_url,
+        servcraft_email_to_job=servcraft_email_to_job,
     )
 
     return {"status": "success"}
@@ -834,6 +847,7 @@ def process_call(
     caller_name, from_number, owner_whatsapp, business_name, telnyx_from,
     property_address, job_description, callback_time, call_summary, urgency_label,
     twenty_api_key, twenty_api_url, whapi_token=None,
+    servcraft_api_key="", servcraft_base_url="", servcraft_email_to_job="",
 ):
     if owner_whatsapp and whapi_token:
         wa_message = (
@@ -855,6 +869,23 @@ def process_call(
         f"We have your details and will call you back {callback_time}."
     )
     send_sms(from_number, sms_text, telnyx_from)
+
+    # ServCraft job card (API + email-to-job fallback) — only if configured for this client
+    if servcraft_api_key or servcraft_email_to_job:
+        try:
+            create_servcraft_job(
+                customer_name=caller_name,
+                phone=from_number,
+                address=property_address,
+                description=job_description,
+                priority="high" if urgency_label == "EMERGENCY" else "normal",
+                business_name=business_name,
+                servcraft_api_key=servcraft_api_key,
+                servcraft_base_url=servcraft_base_url,
+                servcraft_email_to_job=servcraft_email_to_job,
+            )
+        except Exception as e:
+            log.error(f"ServCraft create job error: {e}")
 
     create_crm_contact_and_task(
         name=caller_name,
@@ -959,6 +990,112 @@ def send_sms(to: str, message: str, from_number: str):
         log.info(f"SMS → {to}: HTTP {r.status_code}")
     except Exception as e:
         log.error(f"SMS error: {e}")
+
+
+# ── ServCraft integration (API + email-to-job fallback) ─────────────────────
+#
+# Used by clients on the Allterra Pro tier whose job management lives in ServCraft.
+# Tries the REST API first if a key is configured. Falls back to email-to-job so
+# the job still lands in ServCraft even if the API is unavailable.
+
+def create_servcraft_job(
+    customer_name: str,
+    phone: str,
+    address: str,
+    description: str,
+    priority: str,                # "high" | "normal"
+    business_name: str,
+    servcraft_api_key: str = "",
+    servcraft_base_url: str = "",
+    servcraft_email_to_job: str = "",
+) -> str | None:
+    """Create a job card in ServCraft. Returns job ID if API call succeeded, else None.
+    Always attempts the email-to-job fallback so the job is never dropped."""
+    job_id = None
+
+    # Try API first
+    if servcraft_api_key and servcraft_base_url:
+        try:
+            url = servcraft_base_url.rstrip("/") + "/queries"
+            headers = {
+                "Authorization": f"Bearer {servcraft_api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "customer_name": customer_name,
+                "phone": phone,
+                "address": address,
+                "description": description,
+                "priority": priority,
+                "source": "Allterra AI — After Hours Capture",
+            }
+            r = requests.post(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201):
+                data = r.json() if r.text else {}
+                job_id = data.get("id") or data.get("query_id") or "created"
+                log.info(f"ServCraft job created via API: {job_id}")
+            else:
+                log.warning(f"ServCraft API returned {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            log.error(f"ServCraft API error: {e}")
+
+    # Fallback / always-on email-to-job for redundancy
+    if servcraft_email_to_job:
+        try:
+            _send_servcraft_email_job(
+                to=servcraft_email_to_job,
+                customer_name=customer_name,
+                phone=phone,
+                address=address,
+                description=description,
+                priority=priority,
+                business_name=business_name,
+            )
+        except Exception as e:
+            log.error(f"ServCraft email-to-job error: {e}")
+
+    return job_id
+
+
+def _send_servcraft_email_job(
+    to: str, customer_name: str, phone: str, address: str,
+    description: str, priority: str, business_name: str,
+):
+    """Send a structured email to ServCraft's email-to-job inbox."""
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user or "noreply@allterra.co.za")
+
+    if not (smtp_host and smtp_user and smtp_pass):
+        log.warning("SMTP not configured — skipping ServCraft email-to-job")
+        return
+
+    urgency_tag = "URGENT" if priority == "high" else "STANDARD"
+    subject = f"NEW JOB — {customer_name} — {urgency_tag}"
+
+    body = (
+        f"Client: {customer_name}\n"
+        f"Phone: {phone}\n"
+        f"Address: {address}\n"
+        f"Job Description: {description}\n"
+        f"Priority: {urgency_tag}\n"
+        f"Source: Allterra AI (for {business_name})\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = smtp_from
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_from, [to], msg.as_string())
+
+    log.info(f"ServCraft email-to-job sent to {to} for {customer_name}")
 
 
 # ── Twenty CRM via GraphQL ────────────────────────────────────────────────────
