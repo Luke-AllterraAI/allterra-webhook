@@ -10,6 +10,17 @@ import anthropic
 
 load_dotenv()
 
+# ── Supabase client (analytics + job logging) ─────────────────────────────────
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        from supabase import create_client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"Supabase init failed: {e}")
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
@@ -182,6 +193,56 @@ def get_client(to_number: str, metadata: dict) -> dict:
     return client
 
 
+# ── Analytics / event logging ─────────────────────────────────────────────────
+
+def log_event(event_type: str, tenant: str = "default", metadata: dict | None = None):
+    """Log an analytics event to Supabase. Fails silently if not configured."""
+    if not supabase:
+        return
+    try:
+        supabase.table("analytics").insert({
+            "tenant": tenant,
+            "event_type": event_type,
+            "metadata": metadata or {},
+        }).execute()
+    except Exception as e:
+        log.error(f"log_event error ({event_type}): {e}")
+
+
+def log_job(
+    tenant: str,
+    client_name: str,
+    phone: str,
+    address: str,
+    description: str,
+    priority: str,
+    source: str = "call",
+    call_summary: str = "",
+    call_id: str = "",
+    servcraft_id: str | None = None,
+    twenty_id: str | None = None,
+):
+    """Persist a captured job/lead to the jobs table for the tracker dashboard."""
+    if not supabase:
+        return
+    try:
+        supabase.table("jobs").insert({
+            "tenant": tenant,
+            "client_name": client_name,
+            "phone": phone,
+            "address": address,
+            "description": description,
+            "priority": priority,
+            "source": source,
+            "call_summary": call_summary,
+            "call_id": call_id,
+            "servcraft_id": servcraft_id,
+            "twenty_id": twenty_id,
+        }).execute()
+    except Exception as e:
+        log.error(f"log_job error: {e}")
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _normalise_za_number(number: str) -> str:
@@ -219,6 +280,8 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
         if not phone:
             return
+        log_event("whatsapp_missed_call", tenant=DEFAULT_CLIENT.get("business_name", "default"),
+                  metadata={"from": phone})
         now = _time.time()
         if phone in _recent_wa_calls and now - _recent_wa_calls[phone] < _WA_CALL_DEDUP_WINDOW:
             log.info(f"Duplicate missed call ignored for {phone}")
@@ -303,6 +366,8 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
 
         body = body.strip()
         log.info(f"WhatsApp message from {sender}: '{body}' type={msg_type}")
+        log_event("whatsapp_message_received", tenant=DEFAULT_CLIENT.get("business_name", "default"),
+                  metadata={"from": sender, "body_preview": body[:120]})
 
         if not body:
             continue
@@ -818,6 +883,38 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
     urgency_label = "EMERGENCY" if is_emergency else urgency
 
     log.info(f"Call ended — {caller_name} ({from_number}) | {business_name} | {urgency_label}")
+
+    # ── Analytics: log call answered + job capture events ────────────────────
+    log_event("call_answered", tenant=business_name, metadata={
+        "caller_name": caller_name,
+        "from_number": from_number,
+        "to_number": to_number,
+        "urgency": urgency_label,
+        "call_id": call_id,
+    })
+    if is_emergency:
+        log_event("emergency_escalated", tenant=business_name, metadata={
+            "caller_name": caller_name, "from_number": from_number,
+            "job_description": job_description, "call_id": call_id,
+        })
+    log_event("job_captured", tenant=business_name, metadata={
+        "caller_name": caller_name,
+        "from_number": from_number,
+        "priority": "high" if is_emergency else "normal",
+        "source": "call",
+        "call_id": call_id,
+    })
+    log_job(
+        tenant=business_name,
+        client_name=caller_name,
+        phone=from_number,
+        address=property_address,
+        description=job_description,
+        priority="high" if is_emergency else "normal",
+        source="call",
+        call_summary=call_summary,
+        call_id=call_id,
+    )
 
     # ── Return 200 immediately, process in background to avoid Retell timeout ─
     background_tasks.add_task(
