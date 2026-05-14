@@ -285,12 +285,12 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks, te
         phone = caller_jid.split("@")[0] if "@" in caller_jid else caller_jid
         if not phone:
             return
-        log_event("whatsapp_missed_call", tenant=tenant, metadata={"from": phone})
         now = _time.time()
         if phone in _recent_wa_calls and now - _recent_wa_calls[phone] < _WA_CALL_DEDUP_WINDOW:
             log.info(f"Duplicate missed call ignored for {phone}")
             return
         _recent_wa_calls[phone] = now
+        log_event("whatsapp_missed_call", tenant=tenant, metadata={"from": phone})
         log.info(f"Missed WhatsApp call from {phone}")
         background_tasks.add_task(
             _handle_whatsapp_missed_call,
