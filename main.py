@@ -41,6 +41,9 @@ _recent_wa_calls: dict[str, float] = {}
 _WA_CALL_DEDUP_WINDOW = 60  # seconds
 # Track answered call IDs so we don't treat them as missed when they end
 _answered_wa_calls: set[str] = set()
+# On-call roster per tenant — { tenant_name: set of on-call team member names }
+# Updated at runtime via the ONCALL WhatsApp command or /admin/oncall URL.
+_oncall: dict[str, set[str]] = {}
 
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
@@ -62,6 +65,11 @@ TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 #   servcraft_base_url    — ServCraft API base URL (defaults to SERVCRAFT_BASE_URL env var)
 #   servcraft_email_to_job — Email address that ServCraft uses for email-to-job ingestion
 #                            (acts as both API fallback and redundancy when API is available)
+#   team                  — List of {"name": str, "phone": str} for team members who can
+#                            receive job summaries. The owner manages who is currently on call
+#                            via the ONCALL WhatsApp command.
+#   oncall_default        — List of team-member names who are on call by default at startup.
+#                            Can be overridden at runtime via ONCALL command.
 #
 CLIENTS: dict[str, dict] = {
     "+27600716833": {
@@ -76,6 +84,11 @@ CLIENTS: dict[str, dict] = {
         # ── Add-on ──
         "whatsapp_mode":      "all_messages",
         "whatsapp_reply_mode": "ai",
+        # Sample team for testing the on-call roster — replace with real numbers when ready
+        "team": [
+            {"name": "Luke", "phone": "27837088951"},
+        ],
+        "oncall_default": ["Luke"],
         "whatsapp_ai_prompt": (
             "You are Jordan, a professional WhatsApp assistant for Allterra AI, a South African company "
             "that helps businesses never miss a lead by deploying AI-powered voice receptionists and "
@@ -243,6 +256,43 @@ def log_job(
         log.error(f"log_job error: {e}")
 
 
+# ── On-call roster helpers ───────────────────────────────────────────────────
+
+def get_oncall_phones(client: dict) -> list[str]:
+    """Return phone numbers of team members currently on call for this client."""
+    team = client.get("team") or []
+    if not team:
+        return []
+    tenant = client.get("business_name", "")
+    # Initialise from oncall_default the first time we look one up
+    if tenant not in _oncall:
+        _oncall[tenant] = set(client.get("oncall_default") or [])
+    current_names = _oncall[tenant]
+    name_to_phone = {m["name"].lower(): m["phone"] for m in team if m.get("name") and m.get("phone")}
+    return [name_to_phone[n.lower()] for n in current_names if n.lower() in name_to_phone]
+
+
+def set_oncall(client: dict, names: list[str]) -> tuple[list[str], list[str]]:
+    """Set the on-call list. Returns (matched_canonical_names, unknown_names)."""
+    tenant = client.get("business_name", "")
+    team = client.get("team") or []
+    name_lookup = {m["name"].lower(): m["name"] for m in team if m.get("name")}
+    matched, unknown = [], []
+    for name in names:
+        canonical = name_lookup.get(name.lower())
+        if canonical:
+            matched.append(canonical)
+        else:
+            unknown.append(name)
+    _oncall[tenant] = set(matched)
+    return matched, unknown
+
+
+def list_team_names(client: dict) -> list[str]:
+    """List all configured team member names for this client."""
+    return [m["name"] for m in (client.get("team") or []) if m.get("name")]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _normalise_za_number(number: str) -> str:
@@ -390,6 +440,36 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks, te
             elif upper == "REPLY TEMPLATE":
                 _wa_reply_mode = "template"
                 send_whatsapp(owner, "WhatsApp auto-replies switched to template mode. 📝", whapi_token=whapi_token)
+            elif upper.startswith("ONCALL"):
+                # Manage on-call roster
+                tenant_name = client.get("business_name", "")
+                team = client.get("team") or []
+                parts = body.split()
+                if not team:
+                    send_whatsapp(owner, "No team configured. Add team members in your Allterra config first.", whapi_token=whapi_token)
+                elif len(parts) == 1 or upper in ("ONCALL?", "ONCALL STATUS"):
+                    # Show current status
+                    current = sorted(_oncall.get(tenant_name, set()))
+                    all_names = list_team_names(client)
+                    if not current:
+                        msg = f"No-one currently on call.\n\nTeam: {', '.join(all_names)}"
+                    else:
+                        msg = f"On call right now: *{', '.join(current)}*\n\nFull team: {', '.join(all_names)}"
+                    send_whatsapp(owner, msg, whapi_token=whapi_token)
+                elif upper == "ONCALL ALL":
+                    matched, _ = set_oncall(client, list_team_names(client))
+                    send_whatsapp(owner, f"Everyone is now on call: {', '.join(matched)}", whapi_token=whapi_token)
+                elif upper in ("ONCALL OFF", "ONCALL NONE", "ONCALL CLEAR"):
+                    set_oncall(client, [])
+                    send_whatsapp(owner, "On-call cleared. Only you will receive summaries.", whapi_token=whapi_token)
+                else:
+                    names = parts[1:]
+                    matched, unknown = set_oncall(client, names)
+                    reply = f"On call set: *{', '.join(matched) if matched else '(none)'}*"
+                    if unknown:
+                        reply += f"\nUnknown names skipped: {', '.join(unknown)}"
+                        reply += f"\nTeam: {', '.join(list_team_names(client))}"
+                    send_whatsapp(owner, reply, whapi_token=whapi_token)
             else:
                 stage = _detect_stage(upper)
                 if stage:
@@ -805,9 +885,49 @@ def admin_toggle(command: str, key: str = ""):
             "status": "ok",
             "ai_replies": _ai_replies_enabled,
             "reply_mode": _wa_reply_mode,
+            "oncall": {t: sorted(list(names)) for t, names in _oncall.items()},
         }
     else:
         return {"error": f"Unknown command: {command}"}
+
+
+@app.get("/admin/oncall")
+def admin_oncall(tenant: str, names: str = "", key: str = ""):
+    """Set the on-call roster for a tenant via URL.
+
+    Example:
+      /admin/oncall?key=xxx&tenant=Chapman+Plumbing&names=Mike,Sarah
+      /admin/oncall?key=xxx&tenant=Chapman+Plumbing&names=                 (clear)
+      /admin/oncall?key=xxx&tenant=Chapman+Plumbing&names=ALL              (everyone)
+    """
+    admin_key = os.getenv("ADMIN_KEY", "")
+    if not admin_key or key != admin_key:
+        return {"error": "Unauthorized"}
+
+    # Resolve client by business_name match
+    target_client = None
+    for c in CLIENTS.values():
+        if c.get("business_name") == tenant:
+            target_client = c
+            break
+    if not target_client:
+        return {"error": f"Unknown tenant: {tenant}"}
+
+    if names.strip().upper() == "ALL":
+        name_list = list_team_names(target_client)
+    elif not names.strip():
+        name_list = []
+    else:
+        name_list = [n.strip() for n in names.split(",") if n.strip()]
+
+    matched, unknown = set_oncall(target_client, name_list)
+    return {
+        "status": "ok",
+        "tenant": tenant,
+        "on_call": matched,
+        "unknown": unknown,
+        "team": list_team_names(target_client),
+    }
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -871,6 +991,7 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
     servcraft_api_key: str = client.get("servcraft_api_key") or ""
     servcraft_base_url: str = client.get("servcraft_base_url") or os.getenv("SERVCRAFT_BASE_URL", "")
     servcraft_email_to_job: str = client.get("servcraft_email_to_job") or ""
+    oncall_phones: list[str] = get_oncall_phones(client)
 
     # ── Custom analysis fields — Retell puts them under custom_analysis_data ──
     # Strip whitespace from keys in case of accidental spaces in Retell config
@@ -940,6 +1061,7 @@ async def call_ended(request: Request, background_tasks: BackgroundTasks):
         servcraft_api_key=servcraft_api_key,
         servcraft_base_url=servcraft_base_url,
         servcraft_email_to_job=servcraft_email_to_job,
+        oncall_phones=oncall_phones,
     )
 
     return {"status": "success"}
@@ -950,8 +1072,18 @@ def process_call(
     property_address, job_description, callback_time, call_summary, urgency_label,
     twenty_api_key, twenty_api_url, whapi_token=None,
     servcraft_api_key="", servcraft_base_url="", servcraft_email_to_job="",
+    oncall_phones=None,
 ):
-    if owner_whatsapp and whapi_token:
+    # Build complete recipient list — owner always gets a copy, plus all on-call team members.
+    # De-duped via a set so a single number doesn't get two messages.
+    recipients: set[str] = set()
+    if owner_whatsapp:
+        recipients.add(owner_whatsapp)
+    for phone in (oncall_phones or []):
+        if phone:
+            recipients.add(phone)
+
+    if recipients and whapi_token:
         wa_message = (
             f"*INCOMING CALL — {business_name}* [{urgency_label}]\n\n"
             f"*Name:* {caller_name}\n"
@@ -962,9 +1094,10 @@ def process_call(
             f"*Summary:* {call_summary}\n\n"
             f"_Reply DONE when contacted_"
         )
-        send_whatsapp(owner_whatsapp, wa_message, whapi_token=whapi_token)
+        for phone in recipients:
+            send_whatsapp(phone, wa_message, whapi_token=whapi_token)
     else:
-        log.info(f"WhatsApp notification skipped for {business_name} — no whapi_token configured")
+        log.info(f"WhatsApp notification skipped for {business_name} — no recipients or no whapi_token")
 
     # Follow-up to caller — WhatsApp first (SA-preferred), no SMS fallback
     follow_up = (
