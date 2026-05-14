@@ -370,8 +370,6 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks, te
 
         body = body.strip()
         log.info(f"WhatsApp message from {sender}: '{body}' type={msg_type}")
-        log_event("whatsapp_message_received", tenant=tenant,
-                  metadata={"from": sender, "body_preview": body[:120]})
 
         if not body:
             continue
@@ -407,6 +405,9 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks, te
             )
             if ai_response:
                 send_whatsapp(sender, ai_response, whapi_token=whapi_token)
+                log_event("whatsapp_lead_engaged", tenant=tenant, metadata={
+                    "from": sender, "body_preview": body[:120],
+                })
         elif _ai_replies_enabled:
             background_tasks.add_task(
                     _handle_whatsapp_message,
@@ -965,11 +966,16 @@ def process_call(
     else:
         log.info(f"WhatsApp notification skipped for {business_name} — no whapi_token configured")
 
-    sms_text = (
+    # Follow-up to caller — WhatsApp first (SA-preferred), no SMS fallback
+    follow_up = (
         f"Hi {caller_name} — thanks for calling {business_name}! "
-        f"We have your details and will call you back {callback_time}."
+        f"We have your details and will be in touch with you {callback_time}."
     )
-    send_sms(from_number, sms_text, telnyx_from)
+    if whapi_token:
+        send_whatsapp(from_number, follow_up, whapi_token=whapi_token)
+    else:
+        # Fallback to SMS only if no Whapi configured for this client
+        send_sms(from_number, follow_up, telnyx_from)
 
     # ServCraft job card (API + email-to-job fallback) — only if configured for this client
     if servcraft_api_key or servcraft_email_to_job:
