@@ -194,6 +194,8 @@ DEFAULT_CLIENT: dict = {
     "whatsapp_mode":      "off",
     "whatsapp_reply_mode": "template",
     "whatsapp_ai_prompt": CLIENTS["+27600716833"]["whatsapp_ai_prompt"],
+    "team":               CLIENTS["+27600716833"]["team"],
+    "oncall_default":     CLIENTS["+27600716833"]["oncall_default"],
 }
 
 
