@@ -86,7 +86,9 @@ CLIENTS: dict[str, dict] = {
         "whatsapp_reply_mode": "ai",
         # Sample team for testing the on-call roster — replace with real numbers when ready
         "team": [
-            {"name": "Luke", "phone": "27837088951"},
+            {"name": "Luke",  "phone": "27837088951"},
+            {"name": "Simon", "phone": "27833098698"},
+            {"name": "Leigh", "phone": "27833098696"},
         ],
         "oncall_default": ["Luke"],
         "whatsapp_ai_prompt": (
